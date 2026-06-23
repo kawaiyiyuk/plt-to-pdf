@@ -44,6 +44,8 @@ const els = {
   form: document.querySelector("#controls"),
   file: document.querySelector("#file-input"),
   dropzone: document.querySelector("#dropzone"),
+  dropzoneTitle: document.querySelector("#dropzone-title"),
+  dropzoneDescription: document.querySelector("#dropzone-description"),
   status: document.querySelector("#status"),
   meta: document.querySelector("#meta"),
   editor: document.querySelector("#editor"),
@@ -64,6 +66,7 @@ const els = {
 };
 
 bindEvents();
+renderUploadPrompt();
 initSampleDownload();
 renderEmptyState();
 renderSelectionPanel();
@@ -130,6 +133,7 @@ async function loadFile(file) {
   state.selectedShapeId = findFirstSelectableShapeId(state.drawing);
   state.shapeLineWidthOverrides = {};
   resetViewport();
+  renderUploadPrompt();
   els.status.textContent = `已加载：${file.name}`;
   updateMeta();
   renderLoadingState();
@@ -182,6 +186,7 @@ function onClear() {
   resetViewport();
   cancelPendingConvert();
   els.file.value = "";
+  renderUploadPrompt();
   els.status.textContent = "未加载文件";
   els.meta.textContent = "拖放 .plt 文件或从磁盘选择一个文件。";
   cleanupPdfUrl();
@@ -367,6 +372,16 @@ function renderEmptyState() {
 
 function renderLoadingState() {
   els.editor.innerHTML = '<div class="editor-empty">正在生成 PLT 预览...</div>';
+}
+
+function renderUploadPrompt() {
+  if (state.file) {
+    els.dropzoneTitle.textContent = state.file.name;
+    els.dropzoneDescription.textContent = "已选择文件，可点击或拖入新文件替换";
+    return;
+  }
+  els.dropzoneTitle.textContent = "把 .plt 文件拖到这里";
+  els.dropzoneDescription.textContent = "或者点击选择文件";
 }
 
 function renderEditor() {
