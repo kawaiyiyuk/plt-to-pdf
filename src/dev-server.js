@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { convertPltBufferWithHp2xx } from "./server/hp2xx-converter.js";
+import { convertPltBufferWithHp2xx, previewPltBufferWithHp2xx } from "./server/hp2xx-converter.js";
 import { ConversionQueue, QueueFullError } from "./server/conversion-queue.js";
 import { UploadTooLargeError } from "./server/http-errors.js";
 
@@ -33,6 +33,10 @@ const server = createServer(async (req, res) => {
       await handleConvert(req, res);
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/preview") {
+      await handlePreview(req, res);
+      return;
+    }
 
     const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
     const filePath = resolve(join(root, pathname.slice(1)));
@@ -42,7 +46,10 @@ const server = createServer(async (req, res) => {
       return;
     }
     const data = await readFile(filePath);
-    res.writeHead(200, { "Content-Type": mimeTypes[extname(filePath)] ?? "application/octet-stream" });
+    res.writeHead(200, {
+      "Content-Type": mimeTypes[extname(filePath)] ?? "application/octet-stream",
+      "Cache-Control": "no-store"
+    });
     res.end(data);
   } catch (error) {
     if (!res.headersSent) {
@@ -62,14 +69,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 
 async function handleConvert(req, res) {
   try {
-    const body = await readRequestBody(req, maxJsonUploadBytes);
-    const payload = JSON.parse(body.toString("utf8"));
-    const source = payload.sourceBase64
-      ? Buffer.from(payload.sourceBase64, "base64")
-      : Buffer.from(payload.source ?? "", "utf8");
-    if (source.byteLength > maxUploadBytes) {
-      throw new UploadTooLargeError(maxUploadMb);
-    }
+    const { payload, source } = await readConvertPayload(req);
     const { pdf, svg, layout } = await convertQueue.run(() => convertPltBufferWithHp2xx(source, {
       paperSize: payload.paperSize || null,
       orientation: payload.orientation || "auto",
@@ -93,6 +93,45 @@ async function handleConvert(req, res) {
       error: error instanceof Error ? error.message : String(error)
     }));
   }
+}
+
+async function handlePreview(req, res) {
+  try {
+    const { payload, source } = await readConvertPayload(req);
+    const { svg, layout } = await convertQueue.run(() => previewPltBufferWithHp2xx(source, {
+      paperSize: payload.paperSize || null,
+      orientation: payload.orientation || "auto",
+      marginPt: Number(payload.marginPt ?? 0),
+      lineWidthMm: Number(payload.lineWidthMm),
+      unitsPerInch: Number(payload.unitsPerInch ?? 1016),
+      timeoutMs: convertTimeoutMs
+    }));
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8"
+    });
+    res.end(JSON.stringify({
+      svgBase64: Buffer.from(svg, "utf8").toString("base64"),
+      layout
+    }));
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({
+      error: error instanceof Error ? error.message : String(error)
+    }));
+  }
+}
+
+async function readConvertPayload(req) {
+  const body = await readRequestBody(req, maxJsonUploadBytes);
+  const payload = JSON.parse(body.toString("utf8"));
+  const source = payload.sourceBase64
+    ? Buffer.from(payload.sourceBase64, "base64")
+    : Buffer.from(payload.source ?? "", "utf8");
+  if (source.byteLength > maxUploadBytes) {
+    throw new UploadTooLargeError(maxUploadMb);
+  }
+  return { payload, source };
 }
 
 function readRequestBody(req, maxBytes) {

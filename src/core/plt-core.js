@@ -68,6 +68,17 @@ function createSinglePage(drawing, layout, scale, lineWidthPt, fontSizePt, shape
 
   const transform = (point) => transformPoint(point, scale, layout.xOffset, layout.yOffset);
   appendDrawingContent(content, drawing, transform, scale, lineWidthPt, fontSizePt, shapeLineWidthOverrides);
+  appendMarginGuide(content, {
+    pageWidthPt: layout.widthPt,
+    pageHeightPt: layout.heightPt,
+    marginPt: layout.marginPt
+  });
+  appendPageNumber(content, {
+    pageWidthPt: layout.widthPt,
+    marginPt: layout.marginPt,
+    pageNumber: 1,
+    pageCount: 1
+  });
   content.push("Q");
 
   return {
@@ -94,6 +105,17 @@ function createTiledPages(drawing, layout, scale, lineWidthPt, fontSizePt, shape
 
       const transform = (point) => transformTiledPoint(point, layout, scale, tileXPt, tileYPt);
       appendDrawingContent(content, drawing, transform, scale, lineWidthPt, fontSizePt, shapeLineWidthOverrides);
+      appendMarginGuide(content, {
+        pageWidthPt: layout.pageWidthPt,
+        pageHeightPt: layout.pageHeightPt,
+        marginPt: layout.marginPt
+      });
+      appendPageNumber(content, {
+        pageWidthPt: layout.pageWidthPt,
+        marginPt: layout.marginPt,
+        pageNumber: pages.length + 1,
+        pageCount: layout.pageCount
+      });
       content.push("Q");
       pages.push({
         widthPt: layout.pageWidthPt,
@@ -103,6 +125,51 @@ function createTiledPages(drawing, layout, scale, lineWidthPt, fontSizePt, shape
     }
   }
   return pages;
+}
+
+function appendMarginGuide(content, page) {
+  const marginPt = Number(page.marginPt);
+  const pageWidthPt = Number(page.pageWidthPt);
+  const pageHeightPt = Number(page.pageHeightPt);
+  if (!Number.isFinite(marginPt) || marginPt <= 0 || !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
+    return;
+  }
+  const guideWidth = Math.max(0, pageWidthPt - marginPt * 2);
+  const guideHeight = Math.max(0, pageHeightPt - marginPt * 2);
+  if (guideWidth <= 0 || guideHeight <= 0) {
+    return;
+  }
+  content.push("Q");
+  content.push("q");
+  content.push("0 0 0 RG");
+  content.push("0.5 w");
+  content.push("0 J");
+  content.push("0 j");
+  content.push("[3 3] 0 d");
+  content.push(`${marginPt.toFixed(3)} ${marginPt.toFixed(3)} ${guideWidth.toFixed(3)} ${guideHeight.toFixed(3)} re`);
+  content.push("S");
+}
+
+function appendPageNumber(content, page) {
+  const pageNumber = Number(page.pageNumber);
+  const pageCount = Number(page.pageCount);
+  const pageWidthPt = Number(page.pageWidthPt);
+  const marginPt = Number(page.marginPt);
+  if (!Number.isInteger(pageNumber) || !Number.isInteger(pageCount) || pageCount <= 0 || !Number.isFinite(pageWidthPt)) {
+    return;
+  }
+  const label = `${pageNumber} / ${pageCount}`;
+  const fontSizePt = 9;
+  const x = Math.max(8, pageWidthPt - Math.max(marginPt, 0) - label.length * fontSizePt * 0.5);
+  const y = Math.max(8, Math.max(marginPt, 0) * 0.45);
+  content.push("Q");
+  content.push("q");
+  content.push("0 0 0 rg");
+  content.push("BT");
+  content.push(`/F1 ${fontSizePt.toFixed(3)} Tf`);
+  content.push(`1 0 0 1 ${x.toFixed(3)} ${y.toFixed(3)} Tm`);
+  content.push(`(${escapePdfString(label)}) Tj`);
+  content.push("ET");
 }
 
 function appendDrawingContent(content, drawing, transform, scale, lineWidthPt, fontSizePt, shapeLineWidthOverrides) {

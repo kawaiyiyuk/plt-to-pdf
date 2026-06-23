@@ -14,6 +14,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   margin: 0;
   min-height: 100%;
@@ -47,15 +51,8 @@ h1 {
 
 .subtle,
 .meta,
-.status-row span {
+.status-text {
   color: var(--muted);
-}
-
-.status-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
 }
 
 .workspace {
@@ -139,6 +136,27 @@ select {
   cursor: pointer;
 }
 
+.button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.button.is-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.button.is-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
 .button.secondary {
   background: white;
   color: var(--text);
@@ -149,9 +167,19 @@ select {
   background: var(--accent-strong);
 }
 
+.button:disabled:hover {
+  background: var(--accent);
+}
+
 .button.secondary:hover {
   background: #f8fafc;
   color: var(--text);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .meta {
@@ -160,18 +188,31 @@ select {
   line-height: 1.5;
 }
 
-.selection-panel {
+.conversion-status {
   margin-top: 18px;
   padding-top: 18px;
   border-top: 1px solid var(--border);
 }
 
-.selection-panel h2 {
-  margin: 0 0 8px;
-  font-size: 16px;
+.status-text {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
 }
 
-.selection-panel label {
+.page-count {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.download-button {
+  display: inline-flex;
   margin-top: 12px;
 }
 
@@ -221,20 +262,6 @@ select {
   width: 100%;
   height: 100%;
   display: block;
-}
-
-.shape-hit {
-  fill: none;
-  stroke: transparent;
-  pointer-events: stroke;
-  cursor: pointer;
-}
-
-.shape-selected-outline {
-  fill: none;
-  stroke: #2563eb;
-  opacity: 0.18;
-  pointer-events: none;
 }
 
 @media (max-width: 980px) {

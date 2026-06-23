@@ -12,6 +12,13 @@ const DEFAULT_HP2XX_PATH = resolve("tools/hp2xx");
 const DEFAULT_UNITS_PER_INCH = 1016;
 
 export async function convertPltBufferWithHp2xx(buffer, options = {}) {
+  const preview = await previewPltBufferWithHp2xx(buffer, options);
+  const layout = preview.layout;
+  const pdf = buildPdfFromSvg(preview.svg, preview.textOptions);
+  return { pdf, svg: preview.svg, layout };
+}
+
+export async function previewPltBufferWithHp2xx(buffer, options = {}) {
   const tempDir = await mkdtemp(join(tmpdir(), "plt-to-pdf-"));
   const inputPath = join(tempDir, "input.plt");
   const svgPath = join(tempDir, "output.svg");
@@ -32,8 +39,7 @@ export async function convertPltBufferWithHp2xx(buffer, options = {}) {
       textLabels: extracted.labels
     };
     const layout = getSvgPdfLayout(svg, textOptions);
-    const pdf = buildPdfFromSvg(svg, textOptions);
-    return { pdf, svg, layout };
+    return { svg, textOptions, layout };
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

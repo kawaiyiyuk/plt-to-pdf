@@ -1,11 +1,10 @@
-import { convertDrawingToPdf, getTiledPdfLayout, measureDrawing, parseHpgl } from "./core/plt-core.js";
+import { measureDrawing, parseHpgl } from "./core/plt-core.js";
 import { sanitizeSvgInnerMarkup } from "./core/svg-sanitize.js";
 import { decodePltBuffer } from "./core/text-decoding.js";
 
 const PT_PER_MM = 72 / 25.4;
 const MM_PER_PT = 25.4 / 72;
 const DEFAULT_FONT_SIZE_PT = 10;
-const CONVERT_DEBOUNCE_MS = 800;
 
 const PEN_COLORS = [
   [0, 0, 0],
@@ -26,18 +25,17 @@ const state = {
   previewSvg: "",
   previewViewBox: null,
   pdfUrl: null,
-  sampleUrl: null,
-  selectedShapeId: null,
-  shapeLineWidthOverrides: {},
   viewport: {
     scale: 1,
     offsetX: 0,
     offsetY: 0
   },
   drag: null,
-  convertTimer: null,
+  isConverting: false,
   convertController: null,
-  convertRequestId: 0
+  convertRequestId: 0,
+  previewController: null,
+  previewRequestId: 0
 };
 
 const els = {
@@ -48,28 +46,22 @@ const els = {
   dropzoneDescription: document.querySelector("#dropzone-description"),
   status: document.querySelector("#status"),
   meta: document.querySelector("#meta"),
+  pageCount: document.querySelector("#page-count"),
   editor: document.querySelector("#editor"),
-  openPreview: document.querySelector("#open-preview"),
   download: document.querySelector("#download"),
-  sampleDownload: document.querySelector("#sample-download"),
   convert: document.querySelector("#convert"),
   clear: document.querySelector("#clear"),
   units: document.querySelector("#units"),
   margin: document.querySelector("#margin"),
   lineWidth: document.querySelector("#line-width"),
   paperSize: document.querySelector("#paper-size"),
-  orientation: document.querySelector("#orientation"),
-  selectionInfo: document.querySelector("#selection-info"),
-  selectedLineWidth: document.querySelector("#selected-line-width"),
-  thickenLine: document.querySelector("#thicken-line"),
-  resetLine: document.querySelector("#reset-line")
+  orientation: document.querySelector("#orientation")
 };
 
 bindEvents();
 renderUploadPrompt();
-initSampleDownload();
 renderEmptyState();
-renderSelectionPanel();
+renderConvertButton();
 
 function bindEvents() {
   els.file.addEventListener("change", onFilePicked);
@@ -78,15 +70,11 @@ function bindEvents() {
     event.preventDefault();
     await runConvert();
   });
-  els.editor.addEventListener("click", onEditorClick);
   els.editor.addEventListener("wheel", onEditorWheel, { passive: false });
   els.editor.addEventListener("pointerdown", onEditorPointerDown);
   els.editor.addEventListener("pointermove", onEditorPointerMove);
   els.editor.addEventListener("pointerup", onEditorPointerUp);
   els.editor.addEventListener("pointercancel", onEditorPointerUp);
-  els.selectedLineWidth.addEventListener("input", onSelectedWidthInput);
-  els.thickenLine.addEventListener("click", onThickenLine);
-  els.resetLine.addEventListener("click", onResetLine);
 
   els.dropzone.addEventListener("dragover", (event) => {
     event.preventDefault();
@@ -105,11 +93,14 @@ function bindEvents() {
   });
 
   for (const input of [els.units, els.margin, els.lineWidth, els.paperSize, els.orientation]) {
-    input.addEventListener("input", () => {
-      if (state.drawing) {
-        renderEditor();
-        renderSelectionPanel();
-        scheduleConvert();
+    input.addEventListener("input", async () => {
+      if (state.sourceBase64) {
+        state.previewSvg = "";
+        state.previewViewBox = null;
+        resetConversionResult();
+        updateMeta();
+        renderPreviewLoadingState();
+        await runPreview();
       }
     });
   }
@@ -127,29 +118,26 @@ async function loadFile(file) {
   const buffer = await file.arrayBuffer();
   state.sourceBase64 = arrayBufferToBase64(buffer);
   state.source = decodePltText(buffer);
-  state.drawing = parseHpgl(state.source);
+  state.drawing = parseHpglSafely(state.source);
   state.previewSvg = "";
   state.previewViewBox = null;
-  state.selectedShapeId = findFirstSelectableShapeId(state.drawing);
-  state.shapeLineWidthOverrides = {};
   resetViewport();
   renderUploadPrompt();
   els.status.textContent = `已加载：${file.name}`;
   updateMeta();
-  renderLoadingState();
-  renderSelectionPanel();
-  await runConvert();
+  resetConversionResult();
+  renderPreviewLoadingState();
+  await runPreview();
 }
 
 async function runConvert() {
-  if (state.convertTimer) {
-    clearTimeout(state.convertTimer);
-    state.convertTimer = null;
-  }
+  if (!state.sourceBase64 || state.isConverting) return;
   const requestId = state.convertRequestId + 1;
   state.convertRequestId = requestId;
   state.convertController?.abort();
   state.convertController = new AbortController();
+  state.isConverting = true;
+  renderConvertButton();
   try {
     await onConvert(requestId, state.convertController.signal);
   } catch (error) {
@@ -159,19 +147,10 @@ async function runConvert() {
   } finally {
     if (state.convertRequestId === requestId) {
       state.convertController = null;
+      state.isConverting = false;
+      renderConvertButton();
     }
   }
-}
-
-function scheduleConvert() {
-  if (state.convertTimer) {
-    clearTimeout(state.convertTimer);
-  }
-  els.status.textContent = "等待参数稳定后转换...";
-  state.convertTimer = setTimeout(() => {
-    state.convertTimer = null;
-    runConvert();
-  }, CONVERT_DEBOUNCE_MS);
 }
 
 function onClear() {
@@ -181,25 +160,24 @@ function onClear() {
   state.drawing = null;
   state.previewSvg = "";
   state.previewViewBox = null;
-  state.selectedShapeId = null;
-  state.shapeLineWidthOverrides = {};
   resetViewport();
   cancelPendingConvert();
+  state.isConverting = false;
+  renderConvertButton();
   els.file.value = "";
   renderUploadPrompt();
   els.status.textContent = "未加载文件";
   els.meta.textContent = "拖放 .plt 文件或从磁盘选择一个文件。";
+  clearPageCount();
   cleanupPdfUrl();
-  els.openPreview.href = "#";
-  els.download.href = "#";
+  resetDownloadLink();
   renderEmptyState();
-  renderSelectionPanel();
 }
 
 async function onConvert(requestId, signal) {
   if (!state.sourceBase64) return;
   const options = readOptions();
-  els.status.textContent = "正在使用 hp2xx 转换...";
+  els.status.textContent = "正在转换 PDF，请稍候...";
   const result = await convertOnServer(options, signal);
   if (state.convertRequestId !== requestId) return;
   const blob = base64ToBlob(result.pdfBase64, "application/pdf");
@@ -208,13 +186,67 @@ async function onConvert(requestId, signal) {
   state.previewSvg = result.svgBase64 ? decodeBase64Text(result.svgBase64) : "";
   state.previewViewBox = parseSvgViewBox(state.previewSvg);
   state.pdfUrl = url;
-  els.openPreview.href = url;
-  els.download.href = url;
-  els.download.download = `${stripExtension(state.file?.name ?? "output")}.pdf`;
-  els.status.textContent = `已转换：${state.file?.name ?? "文件"}`;
+  const pageCount = getPdfPageCount(result.layout);
+  els.status.textContent = "转换成功";
   els.meta.textContent = `${state.file?.name ?? "文件"} · PDF ${formatSize(blob.size)} · ${formatServerLayoutSummary(result.layout)} · 边距 ${formatMm(options.marginMm)} mm`;
+  renderPageCount(pageCount);
+  renderDownloadLink(url);
   renderEditor();
-  renderSelectionPanel();
+}
+
+async function runPreview() {
+  if (!state.sourceBase64) return;
+  const requestId = state.previewRequestId + 1;
+  state.previewRequestId = requestId;
+  state.previewController?.abort();
+  state.previewController = new AbortController();
+  try {
+    els.status.textContent = `已加载：${state.file?.name ?? "文件"}，正在生成预览...`;
+    const result = await previewOnServer(readOptions(), state.previewController.signal);
+    if (state.previewRequestId !== requestId) return;
+    state.previewSvg = result.svgBase64 ? decodeBase64Text(result.svgBase64) : "";
+    state.previewViewBox = parseSvgViewBox(state.previewSvg);
+    if (!state.previewSvg || !state.previewViewBox) {
+      els.status.textContent = "预览失败";
+      els.editor.innerHTML = '<div class="editor-empty">没有生成可预览的 SVG，请检查 PLT 文件内容。</div>';
+      return;
+    }
+    renderEditor();
+    const pageCount = getPdfPageCount(result.layout);
+    renderPageCount(pageCount);
+    els.status.textContent = `已加载：${state.file?.name ?? "文件"}，点击开始转换`;
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    els.status.textContent = "预览失败";
+    els.meta.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (state.previewRequestId === requestId) {
+      state.previewController = null;
+    }
+  }
+}
+
+async function previewOnServer(options, signal) {
+  const response = await fetch("/api/preview", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    signal,
+    body: JSON.stringify({
+      sourceBase64: state.sourceBase64,
+      paperSize: options.paperSize,
+      orientation: options.orientation,
+      marginPt: options.marginPt,
+      lineWidthMm: options.lineWidthMm,
+      unitsPerInch: options.unitsPerInch
+    })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(formatConvertError(response.status, result.error));
+  }
+  return result;
 }
 
 async function convertOnServer(options, signal) {
@@ -241,25 +273,14 @@ async function convertOnServer(options, signal) {
 }
 
 function cancelPendingConvert() {
-  if (state.convertTimer) {
-    clearTimeout(state.convertTimer);
-    state.convertTimer = null;
-  }
   state.convertController?.abort();
   state.convertController = null;
   state.convertRequestId += 1;
-}
-
-function onEditorClick(event) {
-  if (state.drag?.didMove) return;
-  const target = event.target.closest?.("[data-shape-id]");
-  if (!target) return;
-  const shapeId = target.getAttribute("data-shape-id");
-  const shape = findShapeById(shapeId);
-  if (!shape || !isSelectableShape(shape)) return;
-  state.selectedShapeId = shapeId;
-  renderSelectionPanel();
-  renderEditor();
+  state.isConverting = false;
+  renderConvertButton();
+  state.previewController?.abort();
+  state.previewController = null;
+  state.previewRequestId += 1;
 }
 
 function onEditorWheel(event) {
@@ -324,44 +345,18 @@ function onEditorPointerUp(event) {
   }, 0);
 }
 
-function onSelectedWidthInput() {
-  if (!state.selectedShapeId) return;
-  const valueMm = Number(els.selectedLineWidth.value);
-  if (!Number.isFinite(valueMm) || valueMm <= 0) return;
-  state.shapeLineWidthOverrides[state.selectedShapeId] = mmToPt(valueMm);
-  renderEditor();
-  renderSelectionPanel();
-  runConvert();
-}
-
-function onThickenLine() {
-  const shape = getSelectedShape();
-  if (!shape) return;
-  const currentWidthPt = getEffectiveShapeLineWidthPt(shape);
-  state.shapeLineWidthOverrides[shape.id] = Math.max(currentWidthPt * 2, 0.1);
-  renderEditor();
-  renderSelectionPanel();
-  runConvert();
-}
-
-function onResetLine() {
-  const shape = getSelectedShape();
-  if (!shape) return;
-  delete state.shapeLineWidthOverrides[shape.id];
-  renderEditor();
-  renderSelectionPanel();
-  runConvert();
-}
-
 function updateMeta() {
-  if (!state.drawing || !state.file) return;
+  if (!state.file) return;
+  if (!state.drawing) {
+    els.meta.textContent = `${state.file.name} · 输入 ${formatSize(state.file.size)}`;
+    return;
+  }
   const options = readOptions();
   const metrics = measureDrawing(
     state.drawing,
     options.unitsPerInch,
     options.fontSizePt,
-    options.lineWidthPt,
-    state.shapeLineWidthOverrides
+    options.lineWidthPt
   );
   els.meta.textContent = `${state.file.name} · ${state.drawing.shapes.length} 个图形 · 输入 ${formatSize(state.file.size)} · ${Math.round(metrics.width)} × ${Math.round(metrics.height)} 单位`;
 }
@@ -370,7 +365,7 @@ function renderEmptyState() {
   els.editor.innerHTML = '<div class="editor-empty">加载 .plt 文件后，可滚轮缩放、按住拖动预览。</div>';
 }
 
-function renderLoadingState() {
+function renderPreviewLoadingState() {
   els.editor.innerHTML = '<div class="editor-empty">正在生成 PLT 预览...</div>';
 }
 
@@ -400,8 +395,7 @@ function renderEditor() {
     state.drawing,
     options.unitsPerInch,
     options.fontSizePt,
-    options.lineWidthPt,
-    state.shapeLineWidthOverrides
+    options.lineWidthPt
   );
   const width = Math.max(metrics.width, 1);
   const height = Math.max(metrics.height, 1);
@@ -413,31 +407,15 @@ function renderEditor() {
   for (const shape of state.drawing.shapes) {
     if (shape.type === "path") {
       const strokeColor = getPenColor(shape.pen);
-      const strokeWidthUnits = getEffectiveShapeLineWidthUnits(shape, scale);
+      const strokeWidthUnits = getShapeLineWidthUnits(shape, scale, options.lineWidthPt);
       const d = pointsToPathData(shape.points);
       if (!d) continue;
-      if (shape.id === state.selectedShapeId) {
-        shapesMarkup.push(
-          `<path class="shape-selected-outline" d="${d}" stroke-width="${Math.max(strokeWidthUnits + 10, 12)}" />`
-        );
-      }
-      shapesMarkup.push(
-        `<path data-shape-id="${shape.id}" class="shape-hit" d="${d}" stroke-width="${Math.max(strokeWidthUnits + 20, 24)}" />`
-      );
       shapesMarkup.push(
         `<path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidthUnits.toFixed(3)}" stroke-linecap="round" stroke-linejoin="round" />`
       );
     } else if (shape.type === "circle") {
       const strokeColor = getPenColor(shape.pen);
-      const strokeWidthUnits = getEffectiveShapeLineWidthUnits(shape, scale);
-      if (shape.id === state.selectedShapeId) {
-        shapesMarkup.push(
-          `<circle class="shape-selected-outline" cx="${shape.center.x}" cy="${shape.center.y}" r="${shape.radius}" stroke-width="${Math.max(strokeWidthUnits + 10, 12)}" />`
-        );
-      }
-      shapesMarkup.push(
-        `<circle data-shape-id="${shape.id}" class="shape-hit" cx="${shape.center.x}" cy="${shape.center.y}" r="${shape.radius}" stroke-width="${Math.max(strokeWidthUnits + 20, 24)}" />`
-      );
+      const strokeWidthUnits = getShapeLineWidthUnits(shape, scale, options.lineWidthPt);
       shapesMarkup.push(
         `<circle cx="${shape.center.x}" cy="${shape.center.y}" r="${shape.radius}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidthUnits.toFixed(3)}" />`
       );
@@ -500,34 +478,6 @@ function hasPreview() {
   return Boolean((state.previewSvg && state.previewViewBox) || state.drawing);
 }
 
-function renderSelectionPanel() {
-  if (state.previewSvg) {
-    els.selectedLineWidth.disabled = true;
-    els.thickenLine.disabled = true;
-    els.resetLine.disabled = true;
-    els.selectionInfo.textContent = "当前预览使用 hp2xx 渲染；请用上方全局线宽调整预览和 PDF。";
-    els.selectedLineWidth.value = "";
-    return;
-  }
-
-  const shape = getSelectedShape();
-  const enabled = Boolean(shape);
-  els.selectedLineWidth.disabled = !enabled;
-  els.thickenLine.disabled = !enabled;
-  els.resetLine.disabled = !enabled;
-
-  if (!shape) {
-    els.selectionInfo.textContent = "点击右侧预览中的一根线条，再调整线宽。";
-    els.selectedLineWidth.value = "";
-    return;
-  }
-
-  const currentWidthPt = getEffectiveShapeLineWidthPt(shape);
-  const originalWidthPt = getOriginalShapeLineWidthPt(shape);
-  els.selectionInfo.textContent = `已选中 ${shape.id} · 当前 ${formatMm(ptToMm(currentWidthPt))} mm · 原始 ${formatMm(ptToMm(originalWidthPt))} mm`;
-  els.selectedLineWidth.value = formatMm(ptToMm(currentWidthPt));
-}
-
 function readOptions() {
   const marginMm = Number(els.margin.value);
   const lineWidthMm = Number(els.lineWidth.value);
@@ -543,17 +493,6 @@ function readOptions() {
   };
 }
 
-function formatLayoutSummary(drawing, options) {
-  const layout = getTiledPdfLayout(drawing, {
-    ...options,
-    shapeLineWidthOverrides: state.shapeLineWidthOverrides
-  });
-  if (layout.type !== "tiled") {
-    return "单页自适应";
-  }
-  return `${layout.paperSize} ${layout.orientation === "landscape" ? "横向" : "竖向"} · ${layout.columns} × ${layout.rows} 页 · 共 ${layout.pageCount} 页`;
-}
-
 function formatServerLayoutSummary(layout) {
   const size = layout?.drawingWidthMm && layout?.drawingHeightMm
     ? `图形 ${layout.drawingWidthMm.toFixed(0)} × ${layout.drawingHeightMm.toFixed(0)} mm · `
@@ -564,42 +503,70 @@ function formatServerLayoutSummary(layout) {
   return `${size}${layout.paperSize} ${layout.orientation === "landscape" ? "横向" : "竖向"} · ${layout.columns} × ${layout.rows} 页 · 共 ${layout.pageCount} 页`;
 }
 
-function getSelectedShape() {
-  return findShapeById(state.selectedShapeId);
+function getPdfPageCount(layout) {
+  if (Number.isInteger(layout?.pageCount) && layout.pageCount > 0) {
+    return layout.pageCount;
+  }
+  return 1;
 }
 
-function getOriginalShapeLineWidthPt(shape) {
-  const scale = 72 / Number(els.units.value);
+function formatPdfPageCount(pageCount) {
+  return `预计 ${pageCount} 张`;
+}
+
+function renderPageCount(pageCount) {
+  els.pageCount.hidden = false;
+  els.pageCount.textContent = `PDF 张数：${formatPdfPageCount(pageCount)}`;
+}
+
+function clearPageCount() {
+  els.pageCount.hidden = true;
+  els.pageCount.textContent = "";
+}
+
+function renderDownloadLink(url) {
+  els.download.hidden = false;
+  els.download.href = url;
+  els.download.download = `${stripExtension(state.file?.name ?? "output")}.pdf`;
+}
+
+function resetDownloadLink() {
+  els.download.hidden = true;
+  els.download.removeAttribute("href");
+  els.download.removeAttribute("download");
+}
+
+function resetConversionResult() {
+  cancelPendingConversion();
+  cleanupPdfUrl();
+  clearPageCount();
+  resetDownloadLink();
+  els.status.textContent = state.file
+    ? `已加载：${state.file.name}，点击开始转换`
+    : "未加载文件";
+}
+
+function cancelPendingConversion() {
+  state.convertController?.abort();
+  state.convertController = null;
+  state.convertRequestId += 1;
+  state.isConverting = false;
+  renderConvertButton();
+}
+
+function renderConvertButton() {
+  const disabled = state.isConverting || !state.sourceBase64;
+  els.convert.disabled = disabled;
+  els.convert.classList.toggle("is-loading", state.isConverting);
+  els.convert.setAttribute("aria-busy", state.isConverting ? "true" : "false");
+  els.convert.textContent = state.isConverting ? "转换中..." : "开始转换";
+}
+
+function getShapeLineWidthUnits(shape, scale, fallbackLineWidthPt) {
   if (Number.isFinite(shape.lineWidthUnits)) {
-    return Math.max(shape.lineWidthUnits * scale, 0.01);
+    return Math.max(shape.lineWidthUnits, 0.01);
   }
-  return mmToPt(Number(els.lineWidth.value));
-}
-
-function getEffectiveShapeLineWidthPt(shape) {
-  const override = state.shapeLineWidthOverrides[shape.id];
-  if (Number.isFinite(override)) {
-    return Math.max(override, 0.01);
-  }
-  return getOriginalShapeLineWidthPt(shape);
-}
-
-function getEffectiveShapeLineWidthUnits(shape, scale) {
-  return Math.max(getEffectiveShapeLineWidthPt(shape) / scale, 0.01);
-}
-
-function findShapeById(shapeId) {
-  if (!state.drawing || !shapeId) return null;
-  return state.drawing.shapes.find((shape) => shape.id === shapeId) ?? null;
-}
-
-function findFirstSelectableShapeId(drawing) {
-  const shape = drawing?.shapes.find((item) => isSelectableShape(item));
-  return shape?.id ?? null;
-}
-
-function isSelectableShape(shape) {
-  return shape?.type === "path" || shape?.type === "circle";
+  return Math.max(fallbackLineWidthPt / scale, 0.01);
 }
 
 function pointsToPathData(points) {
@@ -629,23 +596,6 @@ function cleanupPdfUrl() {
     URL.revokeObjectURL(state.pdfUrl);
     state.pdfUrl = null;
   }
-}
-
-function initSampleDownload() {
-  const sampleSource = [
-    "IN;",
-    "SP1;",
-    "PW5;",
-    "PU100,100;",
-    "PD500,100;",
-    "PU100,150;",
-    "PW80;",
-    "PD500,150;",
-    ""
-  ].join("\n");
-  const blob = new Blob([sampleSource], { type: "text/plain" });
-  state.sampleUrl = URL.createObjectURL(blob);
-  els.sampleDownload.href = state.sampleUrl;
 }
 
 function formatSize(bytes) {
@@ -723,6 +673,14 @@ function getSvgInnerMarkup(svg) {
 
 function decodePltText(buffer) {
   return decodePltBuffer(buffer);
+}
+
+function parseHpglSafely(source) {
+  try {
+    return parseHpgl(source);
+  } catch {
+    return null;
+  }
 }
 
 function stripExtension(name) {

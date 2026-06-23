@@ -404,7 +404,10 @@ function resolveLayout(bounds, options = {}) {
 
 function createSinglePage(document, layout) {
   const content = createPageContent(document, {
+    pageWidthPt: layout.widthPt,
     pageHeightPt: layout.heightPt,
+    pageNumber: 1,
+    pageCount: 1,
     drawingHeightPt: layout.drawingHeightPt,
     marginPt: layout.marginPt,
     tileXPt: 0,
@@ -420,12 +423,17 @@ function createSinglePage(document, layout) {
 
 function createTiledPages(document, layout) {
   const pages = [];
+  const pageCount = layout.pageCount;
   for (let row = 0; row < layout.rows; row += 1) {
     for (let column = 0; column < layout.columns; column += 1) {
+      const pageNumber = pages.length + 1;
       const tileXPt = column * layout.tileWidthPt;
       const tileYPt = row * layout.tileHeightPt;
       const content = createPageContent(document, {
+        pageWidthPt: layout.pageWidthPt,
         pageHeightPt: layout.pageHeightPt,
+        pageNumber,
+        pageCount,
         drawingHeightPt: layout.drawingHeightPt,
         marginPt: layout.marginPt,
         tileXPt,
@@ -515,8 +523,55 @@ function createPageContent(document, page) {
     }
   }
 
+  appendMarginGuide(content, page);
+  appendPageNumber(content, page);
   content.push("Q");
   return content.join("\n");
+}
+
+function appendMarginGuide(content, page) {
+  const marginPt = Number(page.marginPt);
+  const pageWidthPt = Number(page.pageWidthPt);
+  const pageHeightPt = Number(page.pageHeightPt);
+  if (!Number.isFinite(marginPt) || marginPt <= 0 || !Number.isFinite(pageWidthPt) || !Number.isFinite(pageHeightPt)) {
+    return;
+  }
+  const guideWidth = Math.max(0, pageWidthPt - marginPt * 2);
+  const guideHeight = Math.max(0, pageHeightPt - marginPt * 2);
+  if (guideWidth <= 0 || guideHeight <= 0) {
+    return;
+  }
+  content.push("Q");
+  content.push("q");
+  content.push("0 0 0 RG");
+  content.push("0.5 w");
+  content.push("0 J");
+  content.push("0 j");
+  content.push("[3 3] 0 d");
+  content.push(`${format(marginPt)} ${format(marginPt)} ${format(guideWidth)} ${format(guideHeight)} re`);
+  content.push("S");
+}
+
+function appendPageNumber(content, page) {
+  const pageNumber = Number(page.pageNumber);
+  const pageCount = Number(page.pageCount);
+  const pageWidthPt = Number(page.pageWidthPt);
+  const marginPt = Number(page.marginPt);
+  if (!Number.isInteger(pageNumber) || !Number.isInteger(pageCount) || pageCount <= 0 || !Number.isFinite(pageWidthPt)) {
+    return;
+  }
+  const label = `${pageNumber} / ${pageCount}`;
+  const fontSizePt = 9;
+  const x = Math.max(8, pageWidthPt - Math.max(marginPt, 0) - label.length * fontSizePt * 0.5);
+  const y = Math.max(8, Math.max(marginPt, 0) * 0.45);
+  content.push("Q");
+  content.push("q");
+  content.push("0 0 0 rg");
+  content.push("BT");
+  content.push(`/F1 ${format(fontSizePt)} Tf`);
+  content.push(`1 0 0 1 ${format(x)} ${format(y)} Tm`);
+  content.push(`(${escapePdfString(label)}) Tj`);
+  content.push("ET");
 }
 
 function transformPoint(point, bounds, page) {
@@ -662,4 +717,11 @@ function utf16BeHex(text) {
     }
   }
   return bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function escapePdfString(text) {
+  return String(text)
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
 }

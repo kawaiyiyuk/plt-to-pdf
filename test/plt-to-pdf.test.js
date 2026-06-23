@@ -132,6 +132,29 @@ test("applies hp2xx svg line width override", async () => {
   assert.ok(result.pdf.includes("7.087 w"));
 });
 
+test("draws a dashed PDF margin guide on each page", async () => {
+  const source = Buffer.from("IN;SP1;PU0,0;PD1000,0,1000,1000;", "utf8");
+  const result = await convertPltBufferWithHp2xx(source, {
+    paperSize: "A4",
+    orientation: "portrait",
+    marginPt: 10 * 72 / 25.4
+  });
+  assert.ok(result.pdf.includes("[3 3] 0 d"));
+  assert.ok(result.pdf.includes("28.346 28.346 538.583 785.197 re"));
+});
+
+test("adds page numbers to generated PDF pages", async () => {
+  const source = Buffer.from("IN;SP1;PA;PU0,0;PD12000,0,12000,16000,0,16000,0,0;", "utf8");
+  const result = await convertPltBufferWithHp2xx(source, {
+    paperSize: "A4",
+    orientation: "portrait",
+    marginPt: 0
+  });
+  assert.ok(result.layout.pageCount > 1);
+  assert.ok(result.pdf.includes(`(1 / ${result.layout.pageCount}) Tj`));
+  assert.ok(result.pdf.includes(`(${result.layout.pageCount} / ${result.layout.pageCount}) Tj`));
+});
+
 test("times out hp2xx conversion", async () => {
   const source = Buffer.from("IN;SP1;PU0,0;PD1000,0,1000,1000;", "utf8");
   await assert.rejects(
