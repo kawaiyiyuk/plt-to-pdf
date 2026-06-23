@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PLT 转 PDF</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="toolbar">
+        <div>
+          <h1>PLT 转 PDF</h1>
+          <p class="subtle">预览 `.plt` 原始图形，并导出可下载的 PDF。</p>
+        </div>
+        <div class="status-row">
+          <span id="status">未加载文件</span>
+          <a id="sample-download" class="button secondary" href="#" download="pw-demo.plt">下载示例 PLT</a>
+          <a id="open-preview" class="button secondary" href="#" target="_blank" rel="noreferrer">打开 PDF</a>
+          <a id="download" class="button secondary" href="#" download>下载 PDF</a>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="controls">
+          <form id="controls">
+            <label class="dropzone" id="dropzone" for="file-input">
+              <input id="file-input" type="file" accept=".plt,.hpgl,.plt.txt,.txt" hidden />
+              <strong>把 .plt 文件拖到这里</strong>
+              <span>或者点击选择文件</span>
+            </label>
+
+            <div class="field-grid">
+              <label>
+                <span>单位 / 英寸</span>
+                <input id="units" type="number" value="1016" min="1" step="1" />
+              </label>
+              <label>
+                <span>边距（mm）</span>
+                <input id="margin" type="number" value="12.7" min="0" step="0.1" />
+              </label>
+              <label>
+                <span>线宽（mm）</span>
+                <input id="line-width" type="number" value="0.265" min="0.03" step="0.005" />
+              </label>
+              <label>
+                <span>导出纸张</span>
+                <select id="paper-size">
+                  <option value="">按图形尺寸</option>
+                  <option value="A4" selected>A4 分张</option>
+                  <option value="A3">A3 分张</option>
+                  <option value="A2">A2 分张</option>
+                  <option value="A1">A1 分张</option>
+                  <option value="A0">A0 分张</option>
+                </select>
+              </label>
+              <label>
+                <span>纸张方向</span>
+                <select id="orientation">
+                  <option value="auto">自动</option>
+                  <option value="portrait">竖向</option>
+                  <option value="landscape">横向</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="convert" class="button" type="submit">开始转换</button>
+              <button id="clear" class="button secondary" type="button">清空</button>
+            </div>
+          </form>
+
+          <section class="selection-panel">
+            <h2>线条编辑</h2>
+            <p id="selection-info" class="meta">点击右侧预览中的一根线条，再调整线宽。</p>
+            <label>
+              <span>选中线宽（mm）</span>
+              <input id="selected-line-width" type="number" min="0.03" step="0.005" disabled />
+            </label>
+            <div class="button-row">
+              <button id="thicken-line" class="button secondary" type="button" disabled>加粗 2 倍</button>
+              <button id="reset-line" class="button secondary" type="button" disabled>恢复原始</button>
+            </div>
+          </section>
+
+          <p id="meta" class="meta">拖放 .plt 文件或从磁盘选择一个文件。</p>
+        </aside>
+
+        <section class="preview-panel">
+          <div class="panel-band">PLT 预览</div>
+          <div id="editor" class="editor-panel"></div>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="./src/browser-app.js"></script>
+  </body>
+</html>

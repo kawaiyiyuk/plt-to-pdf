@@ -1,0 +1,13 @@
+{
+  "name": "plt-to-pdf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "plt-to-pdf": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "dev": "node src/dev-server.js"
+  }
+}
