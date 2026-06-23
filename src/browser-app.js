@@ -1,4 +1,6 @@
 import { convertDrawingToPdf, getTiledPdfLayout, measureDrawing, parseHpgl } from "./core/plt-core.js";
+import { sanitizeSvgInnerMarkup } from "./core/svg-sanitize.js";
+import { decodePltBuffer } from "./core/text-decoding.js";
 
 const PT_PER_MM = 72 / 25.4;
 const MM_PER_PT = 25.4 / 72;
@@ -701,25 +703,11 @@ function parseSvgViewBox(svg) {
 }
 
 function getSvgInnerMarkup(svg) {
-  const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
-  const svgElement = doc.documentElement?.localName === "svg" ? doc.documentElement : doc.querySelector("svg");
-  if (!svgElement) return "";
-  for (const element of svgElement.querySelectorAll("script, foreignObject")) {
-    element.remove();
-  }
-  return svgElement.innerHTML;
+  return sanitizeSvgInnerMarkup(svg);
 }
 
 function decodePltText(buffer) {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
-    try {
-      return new TextDecoder("gb18030").decode(buffer);
-    } catch {
-      return new TextDecoder("latin1").decode(buffer);
-    }
-  }
+  return decodePltBuffer(buffer);
 }
 
 function stripExtension(name) {

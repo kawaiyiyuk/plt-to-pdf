@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { extname, join, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { convertPltBufferWithHp2xx } from "./server/hp2xx-converter.js";
 import { ConversionQueue, QueueFullError } from "./server/conversion-queue.js";
 import { UploadTooLargeError } from "./server/http-errors.js";
@@ -10,6 +11,7 @@ const port = Number(process.env.PORT ?? 4173);
 const host = "127.0.0.1";
 const maxUploadMb = Number(process.env.MAX_UPLOAD_MB ?? 20);
 const maxUploadBytes = Math.max(1, maxUploadMb) * 1024 * 1024;
+const maxJsonUploadBytes = getMaxJsonUploadBytes(maxUploadBytes);
 const convertTimeoutMs = Number(process.env.CONVERT_TIMEOUT_MS ?? 30000);
 const convertQueue = new ConversionQueue({
   concurrency: Number(process.env.CONVERT_CONCURRENCY ?? 1),
@@ -24,7 +26,7 @@ const mimeTypes = {
   ".pdf": "application/pdf"
 };
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "POST" && url.pathname === "/api/convert") {
@@ -50,13 +52,17 @@ createServer(async (req, res) => {
       res.end();
     }
   }
-}).listen(port, host, () => {
-  console.log(`http://${host}:${port}`);
 });
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  server.listen(port, host, () => {
+    console.log(`http://${host}:${port}`);
+  });
+}
 
 async function handleConvert(req, res) {
   try {
-    const body = await readRequestBody(req, maxUploadBytes);
+    const body = await readRequestBody(req, maxJsonUploadBytes);
     const payload = JSON.parse(body.toString("utf8"));
     const source = payload.sourceBase64
       ? Buffer.from(payload.sourceBase64, "base64")
@@ -129,4 +135,8 @@ function getErrorStatusCode(error) {
     return error.statusCode;
   }
   return 500;
+}
+
+export function getMaxJsonUploadBytes(maxDecodedBytes) {
+  return Math.ceil(maxDecodedBytes * 4 / 3) + 1024;
 }

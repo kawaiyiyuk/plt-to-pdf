@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { convertDrawingToPdf, convertPltToPdf, getTiledPdfLayout, parseHpgl } from "../src/plt-to-pdf.js";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { convertDrawingToPdf, convertPltFile, convertPltToPdf, getTiledPdfLayout, parseHpgl } from "../src/plt-to-pdf.js";
 import { convertPltBufferWithHp2xx } from "../src/server/hp2xx-converter.js";
 import { buildPdfFromSvg, getSvgPdfLayout } from "../src/server/svg-to-pdf.js";
 import { ConversionQueue, QueueFullError } from "../src/server/conversion-queue.js";
 import { ConversionTimeoutError } from "../src/server/http-errors.js";
+import { decodePltBuffer } from "../src/core/text-decoding.js";
+import { sanitizeSvgInnerMarkup } from "../src/core/svg-sanitize.js";
+import { getMaxJsonUploadBytes } from "../src/dev-server.js";
 
 test("parses line work and text", () => {
   const drawing = parseHpgl("IN;SP1;PW20;PA;PU0,0;PD100,0,100,100,0,100,0,0;PU50,50;LBHello\x03;");
@@ -182,6 +188,67 @@ test("preserves non-utf8 PLT bytes for hp2xx conversion", async () => {
   });
   assert.ok(result.pdf.startsWith("%PDF-1.4"));
   assert.equal(result.layout.type, "tiled");
+});
+
+test("decodes non-utf8 PLT text with gb18030 fallback", () => {
+  const source = Buffer.from([
+    0x49, 0x4e, 0x3b,
+    0x4c, 0x42,
+    0xc3, 0xe6, 0xc1, 0xcf,
+    0x03,
+    0x3b
+  ]);
+  assert.equal(decodePltBuffer(source), "IN;LB面料\x03;");
+});
+
+test("file conversion preserves non-utf8 PLT labels", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "plt-to-pdf-test-"));
+  const inputPath = join(tempDir, "input.plt");
+  const outputPath = join(tempDir, "output.pdf");
+  try {
+    await writeFile(inputPath, Buffer.from([
+      0x49, 0x4e, 0x3b,
+      0x4c, 0x42,
+      0xc3, 0xe6, 0xc1, 0xcf,
+      0x03,
+      0x3b
+    ]));
+    await convertPltFile(inputPath, outputPath);
+    const pdf = await readFile(outputPath, "utf8");
+    assert.ok(pdf.includes("(面料) Tj"));
+    assert.ok(!pdf.includes("�"));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("allows base64 JSON upload overhead while enforcing decoded limit", () => {
+  const maxDecodedBytes = 20 * 1024 * 1024;
+  const encodedBodyBytes = JSON.stringify({
+    sourceBase64: Buffer.alloc(maxDecodedBytes).toString("base64")
+  }).length;
+  assert.ok(encodedBodyBytes > maxDecodedBytes);
+  assert.ok(encodedBodyBytes <= getMaxJsonUploadBytes(maxDecodedBytes));
+});
+
+test("sanitizes dangerous svg preview markup", () => {
+  const svg = [
+    '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">',
+    '<script>alert(1)</script>',
+    '<foreignObject><div onclick="alert(2)">x</div></foreignObject>',
+    '<path d="M0 0 L10 10" onclick="alert(3)" stroke="url(javascript:alert(4))" style="stroke:rgb(0,0,0); fill:none; background:url(http://bad.test/a.png)" />',
+    '<image href="http://bad.test/a.png" />',
+    "</svg>"
+  ].join("");
+  const sanitized = sanitizeSvgInnerMarkup(svg);
+  assert.ok(sanitized.includes("<path"));
+  assert.ok(sanitized.includes('d="M0 0 L10 10"'));
+  assert.ok(!sanitized.includes("script"));
+  assert.ok(!sanitized.includes("foreignObject"));
+  assert.ok(!sanitized.includes("onclick"));
+  assert.ok(!sanitized.includes("javascript:"));
+  assert.ok(!sanitized.includes("<image"));
+  assert.ok(!sanitized.includes("url("));
 });
 
 test("tiles hp2xx svg using actual path bounds instead of full viewBox", () => {
