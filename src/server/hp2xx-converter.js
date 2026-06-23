@@ -4,10 +4,11 @@ import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
 import { measureDrawing, parseHpgl } from "../core/plt-core.js";
+import { decodePltBuffer } from "../core/text-decoding.js";
 import { buildPdfFromSvg, getSvgPdfLayout } from "./svg-to-pdf.js";
 import { ConversionTimeoutError } from "./http-errors.js";
 
-const HP2XX_PATH = resolve("tools/hp2xx");
+const DEFAULT_HP2XX_PATH = resolve("tools/hp2xx");
 const DEFAULT_UNITS_PER_INCH = 1016;
 
 export async function convertPltBufferWithHp2xx(buffer, options = {}) {
@@ -207,11 +208,7 @@ function isAsciiLetter(value) {
 }
 
 function decodeTextBytes(bytes) {
-  try {
-    return new TextDecoder("gb18030").decode(bytes);
-  } catch {
-    return Buffer.from(bytes).toString("latin1");
-  }
+  return decodePltBuffer(bytes);
 }
 
 function parseNumberList(text) {
@@ -226,8 +223,9 @@ function parseNumberList(text) {
 function runHp2xx(inputPath, outputPath, size, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const timeoutMs = Number(options.timeoutMs);
+    const hp2xxPath = resolveHp2xxPath(options);
     let settled = false;
-    const child = spawn(HP2XX_PATH, [
+    const child = spawn(hp2xxPath, [
       "-q",
       "-m",
       "svg",
@@ -277,4 +275,8 @@ function runHp2xx(inputPath, outputPath, size, options = {}) {
       });
     });
   });
+}
+
+function resolveHp2xxPath(options = {}) {
+  return String(options.hp2xxPath || process.env.HP2XX_PATH || DEFAULT_HP2XX_PATH);
 }

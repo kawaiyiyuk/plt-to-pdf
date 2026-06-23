@@ -190,6 +190,17 @@ test("preserves non-utf8 PLT bytes for hp2xx conversion", async () => {
   assert.equal(result.layout.type, "tiled");
 });
 
+test("preserves utf-8 PLT labels through hp2xx conversion", async () => {
+  const source = Buffer.from("IN;SP1;SI0.4,0.6;PU1000,1000;LB面料\x03;PU;", "utf8");
+  const result = await convertPltBufferWithHp2xx(source, {
+    paperSize: "A4",
+    orientation: "portrait",
+    marginPt: 0
+  });
+  assert.ok(result.pdf.includes("<97626599> Tj"));
+  assert.ok(!result.pdf.includes("闈㈡枡"));
+});
+
 test("decodes non-utf8 PLT text with gb18030 fallback", () => {
   const source = Buffer.from([
     0x49, 0x4e, 0x3b,

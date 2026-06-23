@@ -55,4 +55,4 @@ node src/cli.js input.plt output.pdf --paper-size A4 --orientation auto
 tools/hp2xx -q -m svg -t -f output.svg input.plt
 ```
 
-`hp2xx` 是命令行工具，不是常驻服务。本仓库的 `tools/hp2xx` 是当前 macOS 本机编译产物；部署到 Linux 服务器时需要在 Linux 镜像或机器上重新编译/安装 `hp2xx`，再让服务端调用对应二进制。
+`hp2xx` 是命令行工具，不是常驻服务。本仓库的 `tools/hp2xx` 是当前 macOS 本机编译产物；部署到 Linux 服务器时需要在 Linux 镜像或机器上重新编译/安装 `hp2xx`，并通过 `HP2XX_PATH=/path/to/hp2xx npm run dev` 指向 Linux 上的可执行文件。

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { extname, join, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { convertPltBufferWithHp2xx } from "./server/hp2xx-converter.js";
@@ -36,7 +36,7 @@ const server = createServer(async (req, res) => {
 
     const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
     const filePath = resolve(join(root, pathname.slice(1)));
-    if (!filePath.startsWith(root)) {
+    if (!isPathInsideRoot(filePath)) {
       res.writeHead(403);
       res.end("Forbidden");
       return;
@@ -139,4 +139,9 @@ function getErrorStatusCode(error) {
 
 export function getMaxJsonUploadBytes(maxDecodedBytes) {
   return Math.ceil(maxDecodedBytes * 4 / 3) + 1024;
+}
+
+function isPathInsideRoot(filePath) {
+  const relativePath = relative(root, filePath);
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
