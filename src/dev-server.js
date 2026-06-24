@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
@@ -91,12 +92,14 @@ async function handleConvert(req, res) {
   let clientId = null;
   let requestId = null;
   let reservation = null;
+  let submitted = null;
   try {
     const { payload, source } = await readConvertPayload(req);
     clientId = normalizeClientId(payload.clientId);
     requestId = normalizeRequestId(payload.requestId);
-    reservation = creditLedger.reserveSubmission(clientId, requestId);
-    if (reservation.jobId) {
+    const jobId = randomUUID();
+    reservation = creditLedger.reserveSubmission(clientId, requestId, jobId);
+    if (!reservation.fresh) {
       const snapshot = convertJobs.get(reservation.jobId);
       respondJson(res, snapshot ? 200 : 202, {
         ...(snapshot ?? { jobId: reservation.jobId, status: "queued" }),
@@ -105,15 +108,15 @@ async function handleConvert(req, res) {
       });
       return;
     }
-    const submitted = convertJobs.enqueue("convert", () => convertPltBufferWithHp2xx(source, {
+    const submission = creditLedger.attachJob(clientId, requestId, jobId);
+    submitted = convertJobs.enqueue("convert", () => convertPltBufferWithHp2xx(source, {
       paperSize: payload.paperSize || null,
       orientation: payload.orientation || "auto",
       marginPt: Number(payload.marginPt ?? 0),
       lineWidthMm: Number(payload.lineWidthMm),
       unitsPerInch: Number(payload.unitsPerInch ?? 1016),
       timeoutMs: convertTimeoutMs
-    }));
-    const submission = creditLedger.attachJob(clientId, requestId, submitted.jobId);
+    }), { jobId });
     submitted.promise.then(
       () => creditLedger.completeSubmission(clientId, requestId),
       () => creditLedger.refundSubmission(clientId, requestId)
@@ -125,11 +128,11 @@ async function handleConvert(req, res) {
       submission
     });
   } catch (error) {
-    if (clientId && requestId && reservation && !reservation.jobId) {
+    if (clientId && requestId && reservation?.fresh) {
       try {
-        creditLedger.refundSubmission(clientId, requestId);
+        creditLedger.cancelSubmission(clientId, requestId);
       } catch {
-        // best effort refund
+        // best effort rollback
       }
     }
     if (error instanceof InsufficientCreditsError) {

@@ -307,10 +307,29 @@ function bindStageZoom() {
 
 function fitStageToView(options = {}) {
   if (!state.stage || !state.layout) return;
+  const previousSize = {
+    width: state.stage.width(),
+    height: state.stage.height()
+  };
   const rect = getEditorRect();
   resizeStageToEditor();
   const bounds = state.layout.bounds.width && state.layout.bounds.height ? state.layout.bounds : EMPTY_BOUNDS;
-  if (options.preserveZoom && state.stage.scaleX() !== 1) return;
+  if (options.preserveZoom && state.stage.scaleX() !== 1) {
+    const scale = state.stage.scaleX();
+    const previousCenter = {
+      x: previousSize.width / 2,
+      y: previousSize.height / 2
+    };
+    const contentCenter = {
+      x: (previousCenter.x - state.stage.x()) / scale,
+      y: (previousCenter.y - state.stage.y()) / scale
+    };
+    state.stage.position({
+      x: (rect.width / 2) - contentCenter.x * scale,
+      y: (rect.height / 2) - contentCenter.y * scale
+    });
+    return;
+  }
   const padding = 36;
   const scale = Math.min(
     (rect.width - padding * 2) / Math.max(bounds.width, 1),

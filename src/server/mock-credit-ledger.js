@@ -14,10 +14,13 @@ export class MockCreditLedger {
     this.submissions = new Map();
   }
 
-  reserveSubmission(clientId, requestId) {
+  reserveSubmission(clientId, requestId, jobId = null) {
     const key = this.#submissionKey(clientId, requestId);
     const existing = this.submissions.get(key);
     if (existing) {
+      if (jobId && !existing.jobId) {
+        existing.jobId = jobId;
+      }
       return this.#snapshot(existing, false);
     }
 
@@ -29,7 +32,7 @@ export class MockCreditLedger {
     const record = {
       clientId,
       requestId,
-      jobId: null,
+      jobId: jobId ? String(jobId) : null,
       status: "reserved",
       cost: this.costPerConversion,
       refunded: false,
@@ -44,9 +47,23 @@ export class MockCreditLedger {
 
   attachJob(clientId, requestId, jobId) {
     const record = this.#requireSubmission(clientId, requestId);
-    record.jobId = jobId;
+    if (!record.jobId) {
+      record.jobId = String(jobId);
+    }
     record.status = "queued";
     return this.#snapshot(record, false);
+  }
+
+  cancelSubmission(clientId, requestId) {
+    const key = this.#submissionKey(clientId, requestId);
+    const record = this.submissions.get(key);
+    if (!record || record.completed || record.refunded) {
+      return false;
+    }
+    const account = this.#getAccount(clientId);
+    account.reservedBalance = Math.max(account.reservedBalance - record.cost, 0);
+    this.submissions.delete(key);
+    return true;
   }
 
   completeSubmission(clientId, requestId) {

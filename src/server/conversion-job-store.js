@@ -15,13 +15,16 @@ export class ConversionJobStore {
     this.pendingJobIds = [];
   }
 
-  enqueue(kind, task) {
+  enqueue(kind, task, options = {}) {
     if (typeof task !== "function") {
       throw new TypeError("ConversionJobStore task must be a function");
     }
 
     this.cleanupExpiredJobs();
-    const jobId = randomUUID();
+    const jobId = options.jobId ? String(options.jobId) : randomUUID();
+    if (this.jobs.has(jobId)) {
+      throw new Error(`ConversionJobStore job already exists: ${jobId}`);
+    }
     const job = {
       jobId,
       kind,

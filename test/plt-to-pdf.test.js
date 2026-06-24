@@ -414,14 +414,31 @@ test("tracks queued and running conversion jobs", async () => {
   assert.equal(finalSecond.svg, undefined);
 });
 
+test("uses caller-provided job ids for queued jobs", async () => {
+  const queue = new ConversionQueue({ concurrency: 1, queueLimit: 1 });
+  const store = new ConversionJobStore({ queue, retentionMs: 60_000 });
+  const jobId = "job-fixed-1";
+  const submitted = store.enqueue("convert", () => Promise.resolve({
+    pdfBase64: "payload-pdf",
+    svgBase64: "payload-svg",
+    layout: { type: "single" }
+  }), { jobId });
+
+  assert.equal(submitted.jobId, jobId);
+  await submitted.promise;
+  assert.equal(store.get(jobId).jobId, jobId);
+});
+
 test("reserves mock credits once per submission and refunds failures", () => {
   const ledger = new MockCreditLedger({ initialBalance: 2, costPerConversion: 1 });
 
-  const first = ledger.reserveSubmission("client-a", "request-1");
+  const first = ledger.reserveSubmission("client-a", "request-1", "job-1");
   assert.equal(first.balanceAfter, 1);
+  assert.equal(first.jobId, "job-1");
 
   const replay = ledger.reserveSubmission("client-a", "request-1");
   assert.equal(replay.balanceAfter, 1);
+  assert.equal(replay.jobId, "job-1");
 
   ledger.attachJob("client-a", "request-1", "job-1");
   ledger.completeSubmission("client-a", "request-1");
@@ -435,6 +452,20 @@ test("reserves mock credits once per submission and refunds failures", () => {
   ledger.attachJob("client-a", "request-2", "job-2");
   ledger.refundSubmission("client-a", "request-2");
   assert.equal(ledger.getBalance("client-a").balance, 1);
+});
+
+test("cancels a reserved submission so the request id can be retried", () => {
+  const ledger = new MockCreditLedger({ initialBalance: 2, costPerConversion: 1 });
+
+  const reserved = ledger.reserveSubmission("client-a", "request-1", "job-1");
+  assert.equal(reserved.fresh, true);
+  assert.equal(ledger.cancelSubmission("client-a", "request-1"), true);
+  assert.equal(ledger.getBalance("client-a").balance, 2);
+
+  const retry = ledger.reserveSubmission("client-a", "request-1", "job-2");
+  assert.equal(retry.fresh, true);
+  assert.equal(retry.jobId, "job-2");
+  assert.equal(retry.balanceAfter, 1);
 });
 
 test("preserves non-utf8 PLT bytes for hp2xx conversion", async () => {

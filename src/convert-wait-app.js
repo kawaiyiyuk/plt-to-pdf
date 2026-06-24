@@ -30,10 +30,12 @@ function init() {
 async function pollJob() {
   const requestId = currentRequestId + 1;
   currentRequestId = requestId;
+  let failureCount = 0;
   while (currentRequestId === requestId) {
     try {
       const job = await fetchJson(`/api/jobs/${encodeURIComponent(jobId)}`);
       if (currentRequestId !== requestId) return;
+      failureCount = 0;
       renderJob(job);
       await loadBalance();
       if (job.status === "done" || job.status === "error") {
@@ -41,9 +43,18 @@ async function pollJob() {
       }
       await sleep(1000);
     } catch (error) {
+      if (currentRequestId !== requestId) return;
+      const status = Number(error?.status);
+      if (status === 404) {
+        await loadBalance();
+        renderError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      failureCount += 1;
       await loadBalance();
-      renderError(error instanceof Error ? error.message : String(error));
-      return;
+      renderStatus("读取任务状态失败，正在重试...");
+      renderMeta(error instanceof Error ? error.message : String(error));
+      await sleep(Math.min(1000 * failureCount, 5000));
     }
   }
 }
@@ -102,6 +113,10 @@ function renderStatus(message) {
   els.status.textContent = message;
 }
 
+function renderMeta(message) {
+  els.meta.textContent = message;
+}
+
 function renderError(message) {
   els.title.textContent = "无法加载任务";
   els.status.textContent = message;
@@ -139,7 +154,9 @@ async function fetchJson(url) {
   const response = await fetch(url, { cache: "no-store" });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(result.error || `请求失败: ${response.status}`);
+    const error = new Error(result.error || `请求失败: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return result;
 }
