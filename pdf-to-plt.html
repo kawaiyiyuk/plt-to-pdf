@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF 转 PLT</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell pdf-app-shell">
+      <section class="toolbar pdf-toolbar">
+        <div>
+          <h1>PDF 转 PLT</h1>
+          <p class="subtle">加载 PDF 页面，裁剪边距后按网格排版并导出图片。</p>
+        </div>
+        <a class="button secondary" href="./index.html">PLT 转 PDF</a>
+      </section>
+
+      <section class="pdf-workspace">
+        <section class="preview-panel pdf-preview-panel">
+          <div class="preview-header">
+            <div>
+              <h2>预览画布</h2>
+              <p class="subtle">支持拖拽查看、滚轮缩放，生成后可直接导出。</p>
+            </div>
+            <button id="fit-view" class="button icon-button" type="button" disabled title="宽屏显示">
+              <span aria-hidden="true">&lt;&gt;</span>
+              宽屏显示
+            </button>
+          </div>
+          <div id="editor" class="editor-panel pdf-editor-panel"></div>
+        </section>
+
+        <aside class="controls pdf-controls">
+          <form id="controls">
+            <label class="dropzone" id="dropzone" for="file-input">
+              <input id="file-input" type="file" accept=".pdf,application/pdf" hidden />
+              <strong id="dropzone-title">把 PDF 文件拖到这里</strong>
+              <span id="dropzone-description">或者点击选择文件</span>
+            </label>
+
+            <div class="tool-section">
+              <h2>操作面板</h2>
+              <label>
+                <span>排列方式</span>
+                <select id="layout-mode">
+                  <option value="horizontal" selected>横向</option>
+                  <option value="vertical">纵向</option>
+                </select>
+              </label>
+
+              <label>
+                <span id="grid-count-label">每行个数</span>
+                <input id="grid-count" type="number" value="4" min="1" max="24" step="1" />
+              </label>
+
+              <label class="checkbox-row">
+                <input id="auto-crop" type="checkbox" />
+                <span>自动裁白边（会改变页面尺寸）</span>
+              </label>
+              <p class="option-warning">仅用于预览或粗略去白边；尺寸准确导出请保持关闭。</p>
+
+              <label>
+                <span>自动裁剪保留(mm)</span>
+                <input id="auto-crop-padding" type="number" value="2" min="0" step="0.1" />
+              </label>
+
+              <div class="crop-grid">
+                <label>
+                  <span>左裁剪(mm)</span>
+                  <input id="crop-left" type="number" value="0" min="0" step="0.1" />
+                </label>
+                <label>
+                  <span>右裁剪(mm)</span>
+                  <input id="crop-right" type="number" value="0" min="0" step="0.1" />
+                </label>
+                <label>
+                  <span>上裁剪(mm)</span>
+                  <input id="crop-top" type="number" value="0" min="0" step="0.1" />
+                </label>
+                <label>
+                  <span>下裁剪(mm)</span>
+                  <input id="crop-bottom" type="number" value="0" min="0" step="0.1" />
+                </label>
+              </div>
+
+              <button id="export-image" class="button secondary full-width" type="button" disabled>导出图片</button>
+              <button id="export-plt" class="button full-width" type="button" disabled>导出 PLT</button>
+            </div>
+          </form>
+
+          <section class="conversion-status" aria-live="polite">
+            <p id="status" class="status-text">未加载文件</p>
+            <p id="meta" class="meta">拖放 PDF 文件或从磁盘选择一个文件。</p>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/vendor/konva/konva.min.js"></script>
+    <script type="module" src="./src/pdf-layout-app.js"></script>
+  </body>
+</html>
