@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PLT 转 PDF · 等待中</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell wait-shell">
+      <section class="toolbar">
+        <div>
+          <h1>转换等待页</h1>
+          <p class="subtle">任务提交后会在这里显示队列状态和下载入口。</p>
+        </div>
+        <a class="button secondary" href="./index.html">返回首页</a>
+      </section>
+
+      <section class="wait-panel">
+        <div class="wait-card">
+          <p class="wait-kicker">PDF 生成中</p>
+          <h2 id="title">正在排队</h2>
+          <p id="status" class="wait-status">任务已提交，等待服务器处理。</p>
+          <p id="meta" class="wait-meta">正在获取任务信息...</p>
+
+          <div class="wait-summary">
+            <div>
+              <span class="wait-label">任务</span>
+              <strong id="job-id">-</strong>
+            </div>
+            <div>
+              <span class="wait-label">积分状态</span>
+              <strong id="credits">-</strong>
+            </div>
+          </div>
+
+          <div class="button-row wait-actions">
+            <a id="download" class="button" href="#" hidden>下载 PDF</a>
+            <a class="button secondary" href="./index.html">返回首页</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/convert-wait-app.js"></script>
+  </body>
+</html>

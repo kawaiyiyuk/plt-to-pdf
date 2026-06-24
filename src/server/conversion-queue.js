@@ -22,19 +22,27 @@ export class ConversionQueue {
     return this.queue.length;
   }
 
-  run(task) {
+  enqueue(task) {
     if (typeof task !== "function") {
-      return Promise.reject(new TypeError("ConversionQueue task must be a function"));
+      throw new TypeError("ConversionQueue task must be a function");
     }
 
     if (this.activeCount >= this.concurrency && this.queue.length >= this.queueLimit) {
-      return Promise.reject(new QueueFullError());
+      throw new QueueFullError();
     }
 
     return new Promise((resolve, reject) => {
       this.queue.push({ task, resolve, reject });
       this.#drain();
     });
+  }
+
+  run(task) {
+    try {
+      return this.enqueue(task);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   #drain() {

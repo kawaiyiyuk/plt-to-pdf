@@ -7,10 +7,13 @@ import { convertDrawingToPdf, convertPltFile, convertPltToPdf, getTiledPdfLayout
 import { convertPltBufferWithHp2xx } from "../src/server/hp2xx-converter.js";
 import { buildPdfFromSvg, getSvgPdfLayout } from "../src/server/svg-to-pdf.js";
 import { ConversionQueue, QueueFullError } from "../src/server/conversion-queue.js";
+import { ConversionJobStore } from "../src/server/conversion-job-store.js";
+import { InsufficientCreditsError, MockCreditLedger } from "../src/server/mock-credit-ledger.js";
 import { ConversionTimeoutError } from "../src/server/http-errors.js";
 import { decodePltBuffer } from "../src/core/text-decoding.js";
 import { sanitizeSvgInnerMarkup } from "../src/core/svg-sanitize.js";
-import { getMaxJsonUploadBytes } from "../src/dev-server.js";
+import { buildPdfLayout, resolvePageCrop } from "../src/core/pdf-layout.js";
+import { getMaxJsonUploadBytes, resolveStaticFile, resolveVendorFile } from "../src/dev-server.js";
 
 test("parses line work and text", () => {
   const drawing = parseHpgl("IN;SP1;PW20;PA;PU0,0;PD100,0,100,100,0,100,0,0;PU50,50;LBHello\x03;");
@@ -20,6 +23,125 @@ test("parses line work and text", () => {
   assert.equal(drawing.shapes[0].lineWidthUnits, 20);
   assert.equal(drawing.shapes[1].type, "text");
   assert.equal(drawing.shapes[1].text, "Hello");
+});
+
+test("lays out rendered PDF pages horizontally by row count", () => {
+  const pages = [
+    { pageNumber: 1, widthPx: 100, heightPx: 200, widthPt: 50, heightPt: 100 },
+    { pageNumber: 2, widthPx: 120, heightPx: 180, widthPt: 60, heightPt: 90 },
+    { pageNumber: 3, widthPx: 80, heightPx: 160, widthPt: 40, heightPt: 80 }
+  ];
+  const layout = buildPdfLayout(pages, {
+    mode: "horizontal",
+    count: 2,
+    gapPx: 20
+  });
+  assert.equal(layout.items[0].x, 10);
+  assert.equal(layout.items[0].y, 10);
+  assert.equal(layout.items[1].x, 130);
+  assert.equal(layout.items[1].y, 10);
+  assert.equal(layout.items[2].x, 10);
+  assert.equal(layout.items[2].y, 230);
+  assert.equal(layout.bounds.width, 260);
+  assert.equal(layout.bounds.height, 400);
+});
+
+test("lays out rendered PDF pages vertically by column count", () => {
+  const pages = [
+    { pageNumber: 1, widthPx: 100, heightPx: 200, widthPt: 50, heightPt: 100 },
+    { pageNumber: 2, widthPx: 120, heightPx: 180, widthPt: 60, heightPt: 90 },
+    { pageNumber: 3, widthPx: 80, heightPx: 160, widthPt: 40, heightPt: 80 }
+  ];
+  const layout = buildPdfLayout(pages, {
+    mode: "vertical",
+    count: 2,
+    gapPx: 20
+  });
+  assert.equal(layout.items[0].x, 10);
+  assert.equal(layout.items[0].y, 10);
+  assert.equal(layout.items[1].x, 10);
+  assert.equal(layout.items[1].y, 230);
+  assert.equal(layout.items[2].x, 150);
+  assert.equal(layout.items[2].y, 10);
+  assert.equal(layout.bounds.width, 240);
+  assert.equal(layout.bounds.height, 420);
+});
+
+test("converts millimeter PDF crop values to rendered page pixels", () => {
+  const page = {
+    widthPx: 720,
+    heightPx: 1440,
+    widthPt: 360,
+    heightPt: 720
+  };
+  const crop = resolvePageCrop(page, {
+    left: 25.4,
+    right: 12.7,
+    top: 10,
+    bottom: 20
+  });
+  const pxPerMm = 144 / 25.4;
+  assert.equal(crop.x, 144);
+  assert.equal(crop.width, 504);
+  assert.ok(Math.abs(crop.y - 10 * pxPerMm) < 0.0001);
+  assert.ok(Math.abs(crop.height - (1440 - 30 * pxPerMm)) < 0.0001);
+});
+
+test("auto crops rendered PDF pages to detected content bounds with padding", () => {
+  const page = {
+    widthPx: 1000,
+    heightPx: 800,
+    widthPt: 500,
+    heightPt: 400,
+    contentBounds: {
+      x: 200,
+      y: 120,
+      width: 500,
+      height: 300
+    }
+  };
+  const crop = resolvePageCrop(page, {}, {
+    autoCrop: true,
+    autoCropPaddingMm: 12.7
+  });
+  assert.equal(crop.x, 128);
+  assert.equal(crop.y, 48);
+  assert.equal(crop.width, 644);
+  assert.equal(crop.height, 444);
+});
+
+test("auto crop still allows manual trim after content bounds", () => {
+  const page = {
+    widthPx: 1000,
+    heightPx: 800,
+    widthPt: 500,
+    heightPt: 400,
+    contentBounds: {
+      x: 200,
+      y: 120,
+      width: 500,
+      height: 300
+    }
+  };
+  const crop = resolvePageCrop(page, { left: 12.7, top: 12.7 }, {
+    autoCrop: true,
+    autoCropPaddingMm: 0
+  });
+  assert.equal(crop.x, 272);
+  assert.equal(crop.y, 192);
+  assert.equal(crop.width, 428);
+  assert.equal(crop.height, 228);
+});
+
+test("serves only allowlisted vendor files", () => {
+  assert.ok(resolveVendorFile("/vendor/konva/konva.min.js")?.endsWith("node_modules/konva/konva.min.js"));
+  assert.ok(resolveVendorFile("/vendor/pdfjs/pdf.mjs")?.endsWith("node_modules/pdfjs-dist/build/pdf.mjs"));
+  assert.ok(resolveVendorFile("/vendor/pdfjs/pdf.worker.mjs")?.endsWith("node_modules/pdfjs-dist/build/pdf.worker.mjs"));
+  assert.ok(resolveVendorFile("/vendor/pdfjs/cmaps/Adobe-GB1-UCS2.bcmap")?.endsWith("node_modules/pdfjs-dist/cmaps/Adobe-GB1-UCS2.bcmap"));
+  assert.equal(resolveVendorFile("/vendor/pdfjs/cmaps/../build/pdf.mjs"), null);
+  assert.equal(resolveVendorFile("/vendor/konva/package.json"), null);
+  assert.equal(resolveVendorFile("/node_modules/konva/konva.min.js"), null);
+  assert.equal(resolveStaticFile("/node_modules/konva/konva.min.js"), null);
 });
 
 test("generates a pdf document", () => {
@@ -195,6 +317,155 @@ test("limits conversion queue concurrency and rejects when full", async () => {
   assert.equal(maxActive, 1);
   assert.equal(queue.active, 0);
   assert.equal(queue.pending, 0);
+});
+
+test("freezes credits on reserve then finalizes or refunds them", () => {
+  const ledger = new MockCreditLedger({ initialBalance: 3, costPerConversion: 1 });
+
+  const reserved = ledger.reserveSubmission("client-a", "req-1");
+  assert.equal(reserved.fresh, true);
+  assert.equal(reserved.status, "reserved");
+  assert.equal(reserved.balanceAfter, 2);
+  const duplicateReserve = ledger.reserveSubmission("client-a", "req-1");
+  assert.equal(duplicateReserve.fresh, false);
+  assert.equal(duplicateReserve.balanceAfter, 2);
+  assert.deepEqual(ledger.getBalance("client-a"), {
+    clientId: "client-a",
+    balance: 2,
+    availableBalance: 2,
+    reservedBalance: 1,
+    spentBalance: 0,
+    totalBalance: 3,
+    costPerConversion: 1,
+    initialBalance: 3
+  });
+
+  const completed = ledger.completeSubmission("client-a", "req-1");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.completed, true);
+  assert.deepEqual(ledger.getBalance("client-a"), {
+    clientId: "client-a",
+    balance: 2,
+    availableBalance: 2,
+    reservedBalance: 0,
+    spentBalance: 1,
+    totalBalance: 2,
+    costPerConversion: 1,
+    initialBalance: 3
+  });
+
+  const refunded = ledger.reserveSubmission("client-b", "req-2");
+  assert.equal(refunded.status, "reserved");
+  ledger.refundSubmission("client-b", "req-2");
+  assert.deepEqual(ledger.getBalance("client-b"), {
+    clientId: "client-b",
+    balance: 3,
+    availableBalance: 3,
+    reservedBalance: 0,
+    spentBalance: 0,
+    totalBalance: 3,
+    costPerConversion: 1,
+    initialBalance: 3
+  });
+});
+
+test("tracks queued and running conversion jobs", async () => {
+  const queue = new ConversionQueue({ concurrency: 1, queueLimit: 1 });
+  const store = new ConversionJobStore({ queue, retentionMs: 60_000 });
+  const releases = [];
+  const makeTask = (result) => () => new Promise((resolve) => {
+    releases.push(() => resolve(result));
+  });
+
+  const first = store.enqueue("convert", makeTask({
+    pdfBase64: "first-pdf",
+    svgBase64: "first-svg",
+    layout: { type: "single" }
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.get(first.jobId).status, "running");
+
+  const second = store.enqueue("convert", makeTask({
+    pdfBase64: "second-pdf",
+    svgBase64: "second-svg",
+    layout: { type: "tiled" }
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.get(second.jobId).status, "queued");
+  assert.equal(store.get(second.jobId).aheadCount, 1);
+
+  assert.throws(() => store.enqueue("convert", makeTask({
+    pdfBase64: "third-pdf",
+    svgBase64: "third-svg",
+    layout: { type: "single" }
+  })), QueueFullError);
+
+  releases.shift()();
+  await first.promise;
+  assert.equal(store.get(second.jobId).status, "running");
+
+  releases.shift()();
+  await second.promise;
+  const finalSecond = store.get(second.jobId);
+  assert.equal(finalSecond.status, "done");
+  assert.equal(finalSecond.pdfBase64, "second-pdf");
+  assert.equal(finalSecond.svgBase64, "second-svg");
+  assert.equal(finalSecond.pdf, undefined);
+  assert.equal(finalSecond.svg, undefined);
+});
+
+test("uses caller-provided job ids for queued jobs", async () => {
+  const queue = new ConversionQueue({ concurrency: 1, queueLimit: 1 });
+  const store = new ConversionJobStore({ queue, retentionMs: 60_000 });
+  const jobId = "job-fixed-1";
+  const submitted = store.enqueue("convert", () => Promise.resolve({
+    pdfBase64: "payload-pdf",
+    svgBase64: "payload-svg",
+    layout: { type: "single" }
+  }), { jobId });
+
+  assert.equal(submitted.jobId, jobId);
+  await submitted.promise;
+  assert.equal(store.get(jobId).jobId, jobId);
+});
+
+test("reserves mock credits once per submission and refunds failures", () => {
+  const ledger = new MockCreditLedger({ initialBalance: 2, costPerConversion: 1 });
+
+  const first = ledger.reserveSubmission("client-a", "request-1", "job-1");
+  assert.equal(first.balanceAfter, 1);
+  assert.equal(first.jobId, "job-1");
+
+  const replay = ledger.reserveSubmission("client-a", "request-1");
+  assert.equal(replay.balanceAfter, 1);
+  assert.equal(replay.jobId, "job-1");
+
+  ledger.attachJob("client-a", "request-1", "job-1");
+  ledger.completeSubmission("client-a", "request-1");
+  assert.equal(ledger.getBalance("client-a").balance, 1);
+
+  const second = ledger.reserveSubmission("client-a", "request-2");
+  assert.equal(second.balanceAfter, 0);
+
+  assert.throws(() => ledger.reserveSubmission("client-a", "request-3"), InsufficientCreditsError);
+
+  ledger.attachJob("client-a", "request-2", "job-2");
+  ledger.refundSubmission("client-a", "request-2");
+  assert.equal(ledger.getBalance("client-a").balance, 1);
+});
+
+test("cancels a reserved submission so the request id can be retried", () => {
+  const ledger = new MockCreditLedger({ initialBalance: 2, costPerConversion: 1 });
+
+  const reserved = ledger.reserveSubmission("client-a", "request-1", "job-1");
+  assert.equal(reserved.fresh, true);
+  assert.equal(ledger.cancelSubmission("client-a", "request-1"), true);
+  assert.equal(ledger.getBalance("client-a").balance, 2);
+
+  const retry = ledger.reserveSubmission("client-a", "request-1", "job-2");
+  assert.equal(retry.fresh, true);
+  assert.equal(retry.jobId, "job-2");
+  assert.equal(retry.balanceAfter, 1);
 });
 
 test("preserves non-utf8 PLT bytes for hp2xx conversion", async () => {

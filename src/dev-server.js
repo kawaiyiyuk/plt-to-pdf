@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { convertPltBufferWithHp2xx, previewPltBufferWithHp2xx } from "./server/hp2xx-converter.js";
 import { ConversionQueue, QueueFullError } from "./server/conversion-queue.js";
+import { ConversionJobStore } from "./server/conversion-job-store.js";
+import { InsufficientCreditsError, MockCreditLedger } from "./server/mock-credit-ledger.js";
 import { UploadTooLargeError } from "./server/http-errors.js";
 
 const root = resolve(".");
@@ -17,13 +20,24 @@ const convertQueue = new ConversionQueue({
   concurrency: Number(process.env.CONVERT_CONCURRENCY ?? 1),
   queueLimit: Number(process.env.CONVERT_QUEUE_LIMIT ?? 20)
 });
+const convertJobs = new ConversionJobStore({ queue: convertQueue });
+const creditLedger = new MockCreditLedger({
+  initialBalance: Number(process.env.MOCK_CREDIT_BALANCE ?? 3),
+  costPerConversion: Number(process.env.MOCK_CREDIT_COST ?? 1)
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
-  ".pdf": "application/pdf"
+  ".pdf": "application/pdf",
+  ".bcmap": "application/octet-stream",
+  ".wasm": "application/wasm",
+  ".cff": "font/collection",
+  ".pfb": "application/octet-stream",
+  ".ttf": "font/ttf"
 };
 
 const server = createServer(async (req, res) => {
@@ -33,21 +47,28 @@ const server = createServer(async (req, res) => {
       await handleConvert(req, res);
       return;
     }
+    if (req.method === "GET" && url.pathname.startsWith("/api/jobs/")) {
+      await handleJobStatus(req, res, decodeURIComponent(url.pathname.slice("/api/jobs/".length)));
+      return;
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/api/credits/")) {
+      await handleCreditStatus(req, res, decodeURIComponent(url.pathname.slice("/api/credits/".length)));
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/preview") {
       await handlePreview(req, res);
       return;
     }
 
-    const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
-    const filePath = resolve(join(root, pathname.slice(1)));
-    if (!isPathInsideRoot(filePath)) {
+    const staticFile = resolveStaticFile(url.pathname);
+    if (!staticFile) {
       res.writeHead(403);
       res.end("Forbidden");
       return;
     }
-    const data = await readFile(filePath);
+    const data = await readFile(staticFile.filePath);
     res.writeHead(200, {
-      "Content-Type": mimeTypes[extname(filePath)] ?? "application/octet-stream",
+      "Content-Type": mimeTypes[extname(staticFile.filePath)] ?? "application/octet-stream",
       "Cache-Control": "no-store"
     });
     res.end(data);
@@ -68,30 +89,64 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 }
 
 async function handleConvert(req, res) {
+  let clientId = null;
+  let requestId = null;
+  let reservation = null;
+  let submitted = null;
   try {
     const { payload, source } = await readConvertPayload(req);
-    const { pdf, svg, layout } = await convertQueue.run(() => convertPltBufferWithHp2xx(source, {
+    clientId = normalizeClientId(payload.clientId);
+    requestId = normalizeRequestId(payload.requestId);
+    const jobId = randomUUID();
+    reservation = creditLedger.reserveSubmission(clientId, requestId, jobId);
+    if (!reservation.fresh) {
+      const snapshot = convertJobs.get(reservation.jobId);
+      respondJson(res, snapshot ? 200 : 202, {
+        ...(snapshot ?? { jobId: reservation.jobId, status: "queued" }),
+        credits: creditLedger.getBalance(clientId),
+        submission: reservation
+      });
+      return;
+    }
+    const submission = creditLedger.attachJob(clientId, requestId, jobId);
+    submitted = convertJobs.enqueue("convert", () => convertPltBufferWithHp2xx(source, {
       paperSize: payload.paperSize || null,
       orientation: payload.orientation || "auto",
       marginPt: Number(payload.marginPt ?? 0),
       lineWidthMm: Number(payload.lineWidthMm),
       unitsPerInch: Number(payload.unitsPerInch ?? 1016),
       timeoutMs: convertTimeoutMs
-    }));
-    res.writeHead(200, {
-      "Content-Type": "application/json; charset=utf-8"
+    }), { jobId });
+    submitted.promise.then(
+      () => creditLedger.completeSubmission(clientId, requestId),
+      () => creditLedger.refundSubmission(clientId, requestId)
+    );
+    const snapshot = convertJobs.get(submitted.jobId) ?? submitted.snapshot;
+    respondJson(res, snapshot?.status === "done" ? 200 : 202, {
+      ...(snapshot ?? { jobId: submitted.jobId, status: "queued" }),
+      credits: creditLedger.getBalance(clientId),
+      submission
     });
-    res.end(JSON.stringify({
-      pdfBase64: Buffer.from(pdf, "utf8").toString("base64"),
-      svgBase64: Buffer.from(svg, "utf8").toString("base64"),
-      layout
-    }));
   } catch (error) {
+    if (clientId && requestId && reservation?.fresh) {
+      try {
+        creditLedger.cancelSubmission(clientId, requestId);
+      } catch {
+        // best effort rollback
+      }
+    }
+    if (error instanceof InsufficientCreditsError) {
+      respondJson(res, error.statusCode, { error: error.message });
+      return;
+    }
     const statusCode = getErrorStatusCode(error);
-    res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({
+    const payload = {
       error: error instanceof Error ? error.message : String(error)
-    }));
+    };
+    if (clientId) {
+      payload.credits = creditLedger.getBalance(clientId);
+    }
+    respondJson(res, statusCode, payload);
   }
 }
 
@@ -119,6 +174,33 @@ async function handlePreview(req, res) {
     res.end(JSON.stringify({
       error: error instanceof Error ? error.message : String(error)
     }));
+  }
+}
+
+async function handleJobStatus(_req, res, jobId) {
+  try {
+    const snapshot = convertJobs.get(jobId);
+    if (!snapshot) {
+      respondJson(res, 404, { error: "任务不存在或已过期" });
+      return;
+    }
+    respondJson(res, 200, snapshot);
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    respondJson(res, statusCode, {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+async function handleCreditStatus(_req, res, clientId) {
+  try {
+    respondJson(res, 200, creditLedger.getBalance(clientId));
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    respondJson(res, statusCode, {
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 }
 
@@ -170,17 +252,95 @@ function getErrorStatusCode(error) {
   if (error instanceof QueueFullError) {
     return error.statusCode;
   }
+  if (error instanceof InsufficientCreditsError) {
+    return error.statusCode;
+  }
   if (Number.isInteger(error?.statusCode)) {
     return error.statusCode;
   }
   return 500;
 }
 
+function respondJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store"
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function normalizeClientId(value) {
+  const clientId = String(value ?? "").trim();
+  if (!clientId) {
+    throw new Error("clientId is required");
+  }
+  return clientId;
+}
+
+function normalizeRequestId(value) {
+  const requestId = String(value ?? "").trim();
+  if (!requestId) {
+    throw new Error("requestId is required");
+  }
+  return requestId;
+}
+
 export function getMaxJsonUploadBytes(maxDecodedBytes) {
   return Math.ceil(maxDecodedBytes * 4 / 3) + 1024;
 }
 
+export function resolveStaticFile(pathname) {
+  const vendorFile = resolveVendorFile(pathname);
+  if (vendorFile) {
+    return { filePath: vendorFile };
+  }
+  const normalizedPathname = pathname === "/" ? "/index.html" : pathname;
+  if (normalizedPathname === "/node_modules" || normalizedPathname.startsWith("/node_modules/")) {
+    return null;
+  }
+  const filePath = resolve(join(root, normalizedPathname.slice(1)));
+  if (!isPathInsideRoot(filePath)) {
+    return null;
+  }
+  return { filePath };
+}
+
+export function resolveVendorFile(pathname) {
+  const exactVendorFiles = {
+    "/vendor/konva/konva.min.js": "node_modules/konva/konva.min.js",
+    "/vendor/pdfjs/pdf.mjs": "node_modules/pdfjs-dist/build/pdf.mjs",
+    "/vendor/pdfjs/pdf.worker.mjs": "node_modules/pdfjs-dist/build/pdf.worker.mjs"
+  };
+  if (exactVendorFiles[pathname]) {
+    return resolve(exactVendorFiles[pathname]);
+  }
+
+  const vendorDirectories = [
+    ["/vendor/pdfjs/cmaps/", "node_modules/pdfjs-dist/cmaps"],
+    ["/vendor/pdfjs/standard_fonts/", "node_modules/pdfjs-dist/standard_fonts"],
+    ["/vendor/pdfjs/wasm/", "node_modules/pdfjs-dist/wasm"]
+  ];
+  for (const [urlPrefix, directory] of vendorDirectories) {
+    if (!pathname.startsWith(urlPrefix)) continue;
+    const filename = pathname.slice(urlPrefix.length);
+    if (!filename || filename.includes("/") || filename.includes("\\")) {
+      return null;
+    }
+    const filePath = resolve(join(directory, filename));
+    if (!isPathInsideDirectory(filePath, resolve(directory))) {
+      return null;
+    }
+    return filePath;
+  }
+
+  return null;
+}
+
 function isPathInsideRoot(filePath) {
-  const relativePath = relative(root, filePath);
+  return isPathInsideDirectory(filePath, root);
+}
+
+function isPathInsideDirectory(filePath, directory) {
+  const relativePath = relative(directory, filePath);
   return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }

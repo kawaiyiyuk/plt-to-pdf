@@ -9,5 +9,9 @@
   "scripts": {
     "test": "node --test",
     "dev": "node src/dev-server.js"
+  },
+  "dependencies": {
+    "konva": "^10.3.0",
+    "pdfjs-dist": "^6.0.227"
   }
 }
