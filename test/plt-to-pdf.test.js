@@ -8,6 +8,7 @@ import { convertPltBufferWithHp2xx } from "../src/server/hp2xx-converter.js";
 import { buildPdfFromSvg, getSvgPdfLayout } from "../src/server/svg-to-pdf.js";
 import { ConversionQueue, QueueFullError } from "../src/server/conversion-queue.js";
 import { ConversionJobStore } from "../src/server/conversion-job-store.js";
+import { InsufficientCreditsError, MockCreditLedger } from "../src/server/mock-credit-ledger.js";
 import { ConversionTimeoutError } from "../src/server/http-errors.js";
 import { decodePltBuffer } from "../src/core/text-decoding.js";
 import { sanitizeSvgInnerMarkup } from "../src/core/svg-sanitize.js";
@@ -318,6 +319,56 @@ test("limits conversion queue concurrency and rejects when full", async () => {
   assert.equal(queue.pending, 0);
 });
 
+test("freezes credits on reserve then finalizes or refunds them", () => {
+  const ledger = new MockCreditLedger({ initialBalance: 3, costPerConversion: 1 });
+
+  const reserved = ledger.reserveSubmission("client-a", "req-1");
+  assert.equal(reserved.fresh, true);
+  assert.equal(reserved.status, "reserved");
+  assert.equal(reserved.balanceAfter, 2);
+  const duplicateReserve = ledger.reserveSubmission("client-a", "req-1");
+  assert.equal(duplicateReserve.fresh, false);
+  assert.equal(duplicateReserve.balanceAfter, 2);
+  assert.deepEqual(ledger.getBalance("client-a"), {
+    clientId: "client-a",
+    balance: 2,
+    availableBalance: 2,
+    reservedBalance: 1,
+    spentBalance: 0,
+    totalBalance: 3,
+    costPerConversion: 1,
+    initialBalance: 3
+  });
+
+  const completed = ledger.completeSubmission("client-a", "req-1");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.completed, true);
+  assert.deepEqual(ledger.getBalance("client-a"), {
+    clientId: "client-a",
+    balance: 2,
+    availableBalance: 2,
+    reservedBalance: 0,
+    spentBalance: 1,
+    totalBalance: 2,
+    costPerConversion: 1,
+    initialBalance: 3
+  });
+
+  const refunded = ledger.reserveSubmission("client-b", "req-2");
+  assert.equal(refunded.status, "reserved");
+  ledger.refundSubmission("client-b", "req-2");
+  assert.deepEqual(ledger.getBalance("client-b"), {
+    clientId: "client-b",
+    balance: 3,
+    availableBalance: 3,
+    reservedBalance: 0,
+    spentBalance: 0,
+    totalBalance: 3,
+    costPerConversion: 1,
+    initialBalance: 3
+  });
+});
+
 test("tracks queued and running conversion jobs", async () => {
   const queue = new ConversionQueue({ concurrency: 1, queueLimit: 1 });
   const store = new ConversionJobStore({ queue, retentionMs: 60_000 });
@@ -361,6 +412,29 @@ test("tracks queued and running conversion jobs", async () => {
   assert.equal(finalSecond.svgBase64, "second-svg");
   assert.equal(finalSecond.pdf, undefined);
   assert.equal(finalSecond.svg, undefined);
+});
+
+test("reserves mock credits once per submission and refunds failures", () => {
+  const ledger = new MockCreditLedger({ initialBalance: 2, costPerConversion: 1 });
+
+  const first = ledger.reserveSubmission("client-a", "request-1");
+  assert.equal(first.balanceAfter, 1);
+
+  const replay = ledger.reserveSubmission("client-a", "request-1");
+  assert.equal(replay.balanceAfter, 1);
+
+  ledger.attachJob("client-a", "request-1", "job-1");
+  ledger.completeSubmission("client-a", "request-1");
+  assert.equal(ledger.getBalance("client-a").balance, 1);
+
+  const second = ledger.reserveSubmission("client-a", "request-2");
+  assert.equal(second.balanceAfter, 0);
+
+  assert.throws(() => ledger.reserveSubmission("client-a", "request-3"), InsufficientCreditsError);
+
+  ledger.attachJob("client-a", "request-2", "job-2");
+  ledger.refundSubmission("client-a", "request-2");
+  assert.equal(ledger.getBalance("client-a").balance, 1);
 });
 
 test("preserves non-utf8 PLT bytes for hp2xx conversion", async () => {

@@ -9,6 +9,10 @@ The browser UI has two pages:
 - `/index.html`: PLT to PDF conversion.
 - `/pdf-to-plt.html`: PDF page layout and image export.
 
+The PLT page does one initial preview after file import, then keeps later layout changes local until you click `预览` again.
+Clicking `开始转换` opens a waiting page that polls the job status and shows the download button when the PDF is ready.
+Conversion credits are simulated in memory for now; they are frozen on submit, consumed on success, and released on failure. Set `MOCK_CREDIT_BALANCE` and `MOCK_CREDIT_COST` to adjust the demo behavior.
+
 The PDF layout page currently supports:
 
 - Load one multi-page PDF.

@@ -62,6 +62,83 @@ h1 {
   min-height: calc(100vh - 112px);
 }
 
+.wait-shell {
+  min-height: calc(100vh - 48px);
+}
+
+.wait-panel {
+  display: grid;
+  place-items: center;
+  min-height: calc(100vh - 130px);
+}
+
+.wait-card {
+  width: min(640px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.wait-kicker {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.wait-card h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.wait-status {
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.wait-meta {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wait-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.wait-summary > div {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.wait-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wait-summary strong {
+  display: block;
+  font-size: 18px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.wait-actions {
+  margin-top: 20px;
+}
+
 .controls,
 .preview-panel {
   background: var(--panel);

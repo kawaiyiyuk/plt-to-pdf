@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { convertPltBufferWithHp2xx, previewPltBufferWithHp2xx } from "./server/hp2xx-converter.js";
 import { ConversionQueue, QueueFullError } from "./server/conversion-queue.js";
 import { ConversionJobStore } from "./server/conversion-job-store.js";
+import { InsufficientCreditsError, MockCreditLedger } from "./server/mock-credit-ledger.js";
 import { UploadTooLargeError } from "./server/http-errors.js";
 
 const root = resolve(".");
@@ -19,6 +20,10 @@ const convertQueue = new ConversionQueue({
   queueLimit: Number(process.env.CONVERT_QUEUE_LIMIT ?? 20)
 });
 const convertJobs = new ConversionJobStore({ queue: convertQueue });
+const creditLedger = new MockCreditLedger({
+  initialBalance: Number(process.env.MOCK_CREDIT_BALANCE ?? 3),
+  costPerConversion: Number(process.env.MOCK_CREDIT_COST ?? 1)
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -43,6 +48,10 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname.startsWith("/api/jobs/")) {
       await handleJobStatus(req, res, decodeURIComponent(url.pathname.slice("/api/jobs/".length)));
+      return;
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/api/credits/")) {
+      await handleCreditStatus(req, res, decodeURIComponent(url.pathname.slice("/api/credits/".length)));
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/preview") {
@@ -79,8 +88,23 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 }
 
 async function handleConvert(req, res) {
+  let clientId = null;
+  let requestId = null;
+  let reservation = null;
   try {
     const { payload, source } = await readConvertPayload(req);
+    clientId = normalizeClientId(payload.clientId);
+    requestId = normalizeRequestId(payload.requestId);
+    reservation = creditLedger.reserveSubmission(clientId, requestId);
+    if (reservation.jobId) {
+      const snapshot = convertJobs.get(reservation.jobId);
+      respondJson(res, snapshot ? 200 : 202, {
+        ...(snapshot ?? { jobId: reservation.jobId, status: "queued" }),
+        credits: creditLedger.getBalance(clientId),
+        submission: reservation
+      });
+      return;
+    }
     const submitted = convertJobs.enqueue("convert", () => convertPltBufferWithHp2xx(source, {
       paperSize: payload.paperSize || null,
       orientation: payload.orientation || "auto",
@@ -89,18 +113,37 @@ async function handleConvert(req, res) {
       unitsPerInch: Number(payload.unitsPerInch ?? 1016),
       timeoutMs: convertTimeoutMs
     }));
+    const submission = creditLedger.attachJob(clientId, requestId, submitted.jobId);
+    submitted.promise.then(
+      () => creditLedger.completeSubmission(clientId, requestId),
+      () => creditLedger.refundSubmission(clientId, requestId)
+    );
     const snapshot = convertJobs.get(submitted.jobId) ?? submitted.snapshot;
-    res.writeHead(snapshot?.status === "done" ? 200 : 202, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store"
+    respondJson(res, snapshot?.status === "done" ? 200 : 202, {
+      ...(snapshot ?? { jobId: submitted.jobId, status: "queued" }),
+      credits: creditLedger.getBalance(clientId),
+      submission
     });
-    res.end(JSON.stringify(snapshot));
   } catch (error) {
+    if (clientId && requestId && reservation && !reservation.jobId) {
+      try {
+        creditLedger.refundSubmission(clientId, requestId);
+      } catch {
+        // best effort refund
+      }
+    }
+    if (error instanceof InsufficientCreditsError) {
+      respondJson(res, error.statusCode, { error: error.message });
+      return;
+    }
     const statusCode = getErrorStatusCode(error);
-    res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({
+    const payload = {
       error: error instanceof Error ? error.message : String(error)
-    }));
+    };
+    if (clientId) {
+      payload.credits = creditLedger.getBalance(clientId);
+    }
+    respondJson(res, statusCode, payload);
   }
 }
 
@@ -135,21 +178,26 @@ async function handleJobStatus(_req, res, jobId) {
   try {
     const snapshot = convertJobs.get(jobId);
     if (!snapshot) {
-      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "任务不存在或已过期" }));
+      respondJson(res, 404, { error: "任务不存在或已过期" });
       return;
     }
-    res.writeHead(200, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store"
-    });
-    res.end(JSON.stringify(snapshot));
+    respondJson(res, 200, snapshot);
   } catch (error) {
     const statusCode = getErrorStatusCode(error);
-    res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({
+    respondJson(res, statusCode, {
       error: error instanceof Error ? error.message : String(error)
-    }));
+    });
+  }
+}
+
+async function handleCreditStatus(_req, res, clientId) {
+  try {
+    respondJson(res, 200, creditLedger.getBalance(clientId));
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    respondJson(res, statusCode, {
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 }
 
@@ -201,10 +249,37 @@ function getErrorStatusCode(error) {
   if (error instanceof QueueFullError) {
     return error.statusCode;
   }
+  if (error instanceof InsufficientCreditsError) {
+    return error.statusCode;
+  }
   if (Number.isInteger(error?.statusCode)) {
     return error.statusCode;
   }
   return 500;
+}
+
+function respondJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store"
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function normalizeClientId(value) {
+  const clientId = String(value ?? "").trim();
+  if (!clientId) {
+    throw new Error("clientId is required");
+  }
+  return clientId;
+}
+
+function normalizeRequestId(value) {
+  const requestId = String(value ?? "").trim();
+  if (!requestId) {
+    throw new Error("requestId is required");
+  }
+  return requestId;
 }
 
 export function getMaxJsonUploadBytes(maxDecodedBytes) {

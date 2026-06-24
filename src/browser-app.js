@@ -17,6 +17,8 @@ const PEN_COLORS = [
   [0.7, 0.45, 0.1]
 ];
 
+const CLIENT_ID_STORAGE_KEY = "plt-to-pdf:client-id";
+
 const state = {
   file: null,
   source: "",
@@ -49,6 +51,7 @@ const els = {
   meta: document.querySelector("#meta"),
   pageCount: document.querySelector("#page-count"),
   editor: document.querySelector("#editor"),
+  preview: document.querySelector("#preview"),
   download: document.querySelector("#download"),
   convert: document.querySelector("#convert"),
   clear: document.querySelector("#clear"),
@@ -63,10 +66,14 @@ bindEvents();
 renderUploadPrompt();
 renderEmptyState();
 renderConvertButton();
+renderPreviewButton();
 
 function bindEvents() {
   els.file.addEventListener("change", onFilePicked);
   els.clear.addEventListener("click", onClear);
+  els.preview.addEventListener("click", async () => {
+    await runPreview();
+  });
   els.form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await runConvert();
@@ -100,8 +107,8 @@ function bindEvents() {
         state.previewViewBox = null;
         resetConversionResult();
         updateMeta();
-        renderPreviewLoadingState();
-        await runPreview();
+        renderEditor();
+        renderPreviewButton();
       }
     });
   }
@@ -124,12 +131,10 @@ async function loadFile(file) {
   state.previewViewBox = null;
   resetViewport();
   renderUploadPrompt();
-  if (!state.isConverting) {
-    els.status.textContent = `已加载：${file.name}`;
-  }
   updateMeta();
   resetConversionResult();
-  renderPreviewLoadingState();
+  renderEditor();
+  renderPreviewButton();
   await runPreview();
 }
 
@@ -142,6 +147,7 @@ async function runConvert() {
   state.isConverting = true;
   state.convertJob = null;
   renderConvertButton();
+  renderPreviewButton();
   try {
     await onConvert(requestId, state.convertController.signal);
   } catch (error) {
@@ -153,6 +159,7 @@ async function runConvert() {
       state.convertController = null;
       state.isConverting = false;
       renderConvertButton();
+      renderPreviewButton();
     }
   }
 }
@@ -167,8 +174,10 @@ function onClear() {
   state.convertJob = null;
   resetViewport();
   cancelPendingConvert();
+  cancelPendingPreview();
   state.isConverting = false;
   renderConvertButton();
+  renderPreviewButton();
   els.file.value = "";
   renderUploadPrompt();
   els.status.textContent = "未加载文件";
@@ -182,10 +191,14 @@ function onClear() {
 async function onConvert(requestId, signal) {
   if (!state.sourceBase64) return;
   const options = readOptions();
+  cancelPendingPreview();
   els.status.textContent = "正在提交转换任务...";
-  const initialJob = await submitConvertJob(options, signal);
+  const clientId = getClientId();
+  const submissionId = createSubmissionId();
+  const initialJob = await submitConvertJob(options, signal, clientId, submissionId);
   if (state.convertRequestId !== requestId) return;
-  await monitorConvertJob(initialJob, options, requestId, signal);
+  els.status.textContent = "转换任务已提交，正在打开等待页...";
+  navigateToWaitPage(initialJob.jobId, clientId);
 }
 
 async function runPreview() {
@@ -194,6 +207,7 @@ async function runPreview() {
   state.previewRequestId = requestId;
   state.previewController?.abort();
   state.previewController = new AbortController();
+  renderPreviewButton();
   try {
     if (!state.isConverting) {
       els.status.textContent = `已加载：${state.file?.name ?? "文件"}，正在生成预览...`;
@@ -206,14 +220,18 @@ async function runPreview() {
       if (!state.isConverting) {
         els.status.textContent = "预览失败";
       }
-      els.editor.innerHTML = '<div class="editor-empty">没有生成可预览的 SVG，请检查 PLT 文件内容。</div>';
+      if (state.drawing) {
+        renderEditor();
+      } else {
+        els.editor.innerHTML = '<div class="editor-empty">没有生成可预览的 SVG，请检查 PLT 文件内容。</div>';
+      }
       return;
     }
     renderEditor();
     const pageCount = getPdfPageCount(result.layout);
     renderPageCount(pageCount);
     if (!state.isConverting) {
-      els.status.textContent = `已加载：${state.file?.name ?? "文件"}，点击开始转换`;
+      els.status.textContent = `已加载：${state.file?.name ?? "文件"}，点击预览或直接转换`;
     }
   } catch (error) {
     if (error?.name === "AbortError") return;
@@ -221,9 +239,13 @@ async function runPreview() {
       els.status.textContent = "预览失败";
     }
     els.meta.textContent = error instanceof Error ? error.message : String(error);
+    if (state.drawing) {
+      renderEditor();
+    }
   } finally {
     if (state.previewRequestId === requestId) {
       state.previewController = null;
+      renderPreviewButton();
     }
   }
 }
@@ -251,7 +273,7 @@ async function previewOnServer(options, signal) {
   return result;
 }
 
-async function submitConvertJob(options, signal) {
+async function submitConvertJob(options, signal, clientId, requestId) {
   const response = await fetch("/api/convert", {
     method: "POST",
     headers: {
@@ -260,6 +282,8 @@ async function submitConvertJob(options, signal) {
     signal,
     body: JSON.stringify({
       sourceBase64: state.sourceBase64,
+      clientId,
+      requestId,
       paperSize: options.paperSize,
       orientation: options.orientation,
       marginPt: options.marginPt,
@@ -415,10 +439,6 @@ function updateMeta() {
 
 function renderEmptyState() {
   els.editor.innerHTML = '<div class="editor-empty">加载 .plt 文件后，可滚轮缩放、按住拖动预览。</div>';
-}
-
-function renderPreviewLoadingState() {
-  els.editor.innerHTML = '<div class="editor-empty">正在生成 PLT 预览...</div>';
 }
 
 function renderUploadPrompt() {
@@ -594,9 +614,10 @@ function resetConversionResult() {
   clearPageCount();
   resetDownloadLink();
   state.convertJob = null;
+  cancelPendingPreview();
   if (!state.isConverting) {
     els.status.textContent = state.file
-      ? `已加载：${state.file.name}，点击开始转换`
+      ? `已加载：${state.file.name}，点击预览或直接转换`
       : "未加载文件";
   }
 }
@@ -610,6 +631,13 @@ function cancelPendingConversion() {
   renderConvertButton();
 }
 
+function cancelPendingPreview() {
+  state.previewController?.abort();
+  state.previewController = null;
+  state.previewRequestId += 1;
+  renderPreviewButton();
+}
+
 function renderConvertButton() {
   const disabled = state.isConverting || !state.sourceBase64;
   const label = state.isConverting
@@ -619,6 +647,18 @@ function renderConvertButton() {
   els.convert.classList.toggle("is-loading", state.isConverting);
   els.convert.setAttribute("aria-busy", state.isConverting ? "true" : "false");
   els.convert.textContent = label;
+}
+
+function renderPreviewButton() {
+  const isPreviewing = Boolean(state.previewController);
+  const disabled = state.isConverting || isPreviewing || !state.sourceBase64;
+  const label = isPreviewing
+    ? "预览中..."
+    : (state.previewSvg ? "重新预览" : "预览");
+  els.preview.disabled = disabled;
+  els.preview.classList.toggle("is-loading", isPreviewing);
+  els.preview.setAttribute("aria-busy", isPreviewing ? "true" : "false");
+  els.preview.textContent = label;
 }
 
 function getShapeLineWidthUnits(shape, scale, fallbackLineWidthPt) {
@@ -678,6 +718,7 @@ function formatMm(value) {
 function formatConvertError(status, message) {
   if (message) return message;
   if (status === 413) return "文件过大，请上传更小的 PLT 文件。";
+  if (status === 402) return "积分不足，无法继续转换。";
   if (status === 429) return "转换任务较多，请稍后再试。";
   if (status === 404) return "转换任务已过期，请重新提交。";
   if (status === 504) return "转换超时，请尝试简化文件或稍后重试。";
@@ -756,6 +797,26 @@ function arrayBufferToBase64(buffer) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+function getClientId() {
+  let clientId = localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+  if (!clientId) {
+    clientId = createSubmissionId();
+    localStorage.setItem(CLIENT_ID_STORAGE_KEY, clientId);
+  }
+  return clientId;
+}
+
+function createSubmissionId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function navigateToWaitPage(jobId, clientId) {
+  const url = new URL("./convert-wait.html", window.location.href);
+  url.searchParams.set("jobId", jobId);
+  url.searchParams.set("clientId", clientId);
+  window.location.assign(url.toString());
 }
 
 function parseSvgViewBox(svg) {
